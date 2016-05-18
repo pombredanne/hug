@@ -2,7 +2,7 @@
 
 Defines and stores Hug's default handlers
 
-Copyright (C) 2015  Timothy Edmund Crosley
+Copyright (C) 2016  Timothy Edmund Crosley
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
@@ -19,10 +19,28 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 OTHER DEALINGS IN THE SOFTWARE.
 
 """
+from __future__ import absolute_import
+
 import hug
 
 output_format = hug.output_format.json
-input_format = {'application/json': hug.input_format.json, 'text/plain': hug.input_format.text,
-                'text/css': hug.input_format.text, 'text/html': hug.input_format.text}
-directives = {'timer': hug.directives.Timer, 'api': hug.directives.api, 'module': hug.directives.module,
-              'current_api': hug.directives.CurrentAPI, 'api_version': hug.directives.api_version}
+
+input_format = {
+    'application/json': hug.input_format.json,
+    'application/x-www-form-urlencoded': hug.input_format.urlencoded,
+    'multipart/form-data': hug.input_format.multipart,
+    'text/plain': hug.input_format.text,
+    'text/css': hug.input_format.text,
+    'text/html': hug.input_format.text
+}
+
+directives = {
+    'timer': hug.directives.Timer,
+    'api': hug.directives.api,
+    'module': hug.directives.module,
+    'current_api': hug.directives.CurrentAPI,
+    'api_version': hug.directives.api_version,
+    'user': hug.directives.user,
+    'session': hug.directives.session,
+    'documentation': hug.directives.documentation
+}

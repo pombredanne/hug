@@ -12,7 +12,7 @@ Hug's Design Objectives:
 - Magic done once, in an API, is better then pushing the problem set to the user of the API.
 - Be the basis for next generation Python APIs, embracing the latest technology.
 
-Copyright (C) 2015  Timothy Edmund Crosley
+Copyright (C) 2016  Timothy Edmund Crosley
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
@@ -29,17 +29,21 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 OTHER DEALINGS IN THE SOFTWARE.
 
 """
-from hug import (authentication, directives, documentation, exceptions, format,
-                 input_format, middleware, output_format, run, test, types)
-from hug._version import current
-from hug.decorators import (call, cli, connect, default_input_format, default_output_format,
-                            delete, directive, extend_api, get, head, not_found, options,
-                            patch, post, put, request_middleware, response_middleware, trace)
+from __future__ import absolute_import
 
+from falcon import *
+
+from hug import (authentication, directives, exceptions, format, input_format, introspect,
+                 middleware, output_format, redirect, route, test, transform, types, use, validate)
+from hug._version import current
+from hug.api import API
+from hug.decorators import (default_input_format, default_output_format, directive, extend_api,
+                            middleware_class, request_middleware, response_middleware, startup, wraps)
+from hug.route import (call, cli, connect, delete, exception, get, get_post, head, http, local,
+                       not_found, object, options, patch, post, put, sink, static, trace)
+from hug.types import create as type
+
+from hug import development_runner # isort:skip
 from hug import defaults  # isort:skip - must be imported last for defaults to have access to all modules
 
 __version__ = current
-__all__ = ['__version__', 'authentication', 'call', 'cli', 'connect', 'default_input_format', 'default_output_format',
-           'defaults', 'delete', 'directive', 'directives', 'documentation', 'exceptions', 'extend_api', 'format',
-           'get', 'head', 'input_format', 'middleware', 'not_found', 'options', 'output_format', 'patch', 'post', 'put',
-           'request_middleware', 'response_middleware', 'run', 'terminal', 'test', 'trace', 'types']

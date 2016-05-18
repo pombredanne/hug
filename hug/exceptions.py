@@ -2,7 +2,7 @@
 
 Defines the custom exceptions that are part of, and support
 
-Copyright (C) 2015  Timothy Edmund Crosley
+Copyright (C) 2016  Timothy Edmund Crosley
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
@@ -19,15 +19,20 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 OTHER DEALINGS IN THE SOFTWARE.
 
 """
+from __future__ import absolute_import
 
 
 class InvalidTypeData(Exception):
-    '''Should be raised when data passed in doesn't match a types expectations'''
+    """Should be raised when data passed in doesn't match a types expectations"""
     def __init__(self, message, reasons=None):
         self.message = message
         self.reasons = reasons
 
 
-class SessionNotFound(Exception):
-    '''Should be raised when a session ID has not been found inside a session store'''
+class StoreKeyNotFound(Exception):
+    """Should be raised when a store key has not been found inside a store"""
+
+
+class SessionNotFound(StoreKeyNotFound):
+    """Should be raised when a session ID has not been found inside a session store"""
     pass

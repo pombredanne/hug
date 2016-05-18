@@ -3,7 +3,7 @@
 Defines formatting utility methods that are common both to input and output formatting and aid in general formatting of
 fields and content
 
-Copyright (C) 2015  Timothy Edmund Crosley
+Copyright (C) 2016  Timothy Edmund Crosley
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
@@ -20,13 +20,25 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 OTHER DEALINGS IN THE SOFTWARE.
 
 """
+from __future__ import absolute_import
+
 import re
+from cgi import parse_header
+
+from hug import _empty as empty
 
 UNDERSCORE = (re.compile('(.)([A-Z][a-z]+)'), re.compile('([a-z0-9])([A-Z])'))
 
 
+def parse_content_type(content_type):
+    """Separates out the parameters from the content_type and returns both in a tuple (content_type, parameters)"""
+    if ';' in content_type:
+        return parse_header(content_type)
+    return (content_type, empty.dict)
+
+
 def content_type(content_type):
-    '''Attaches an explicit HTML content type to a Hug formatting function'''
+    """Attaches the supplied content_type to a Hug formatting function"""
     def decorator(method):
         method.content_type = content_type
         return method
@@ -34,10 +46,10 @@ def content_type(content_type):
 
 
 def underscore(text):
-    '''Converts text that may be camelcased into an underscored format'''
+    """Converts text that may be camelcased into an underscored format"""
     return UNDERSCORE[1].sub(r'\1_\2', UNDERSCORE[0].sub(r'\1_\2', text)).lower()
 
 
 def camelcase(text):
-    '''Converts text that may be underscored into a camelcase format'''
+    """Converts text that may be underscored into a camelcase format"""
     return text[0] + "".join(text.title().split('_'))[1:]

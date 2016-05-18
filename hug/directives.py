@@ -5,7 +5,7 @@ on an argument it takes and that arguments default value. The directive gets cal
 ther request data, and api_version. The result of running the directive method is then set as the argument value.
 Directive attributes are always prefixed with 'hug_'
 
-Copyright (C) 2015  Timothy Edmund Crosley
+Copyright (C) 2016  Timothy Edmund Crosley
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
@@ -22,19 +22,23 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 OTHER DEALINGS IN THE SOFTWARE.
 
 """
+from __future__ import absolute_import
+
 from functools import partial
 from timeit import default_timer as python_timer
 
+from hug import introspect
+
 
 def _built_in_directive(directive):
-    '''Marks a callable as a built-in directive'''
+    """Marks a callable as a built-in directive"""
     directive.directive = True
     return directive
 
 
 @_built_in_directive
 class Timer(object):
-    '''Keeps track of time surpased since instantiation, outputed by doing float(instance)'''
+    """Keeps track of time surpased since instantiation, outputed by doing float(instance)"""
     __slots__ = ('start', 'round_to')
 
     def __init__(self, round_to=None, **kwargs):
@@ -53,26 +57,46 @@ class Timer(object):
 
 
 @_built_in_directive
-def module(default=None, module=None, **kwargs):
-    '''Returns the module that is running this hug API function'''
-    return module if module else default
+def module(default=None, api=None, **kwargs):
+    """Returns the module that is running this hug API function"""
+    return api.module if api else default
 
 
 @_built_in_directive
-def api(default=None, module=None, **kwargs):
-    '''Returns the api instance in which this API function is being ran'''
-    return getattr(module, '__hug__', default)
+def api(default=None, api=None, **kwargs):
+    """Returns the api instance in which this API function is being ran"""
+    return api if api else default
 
 
 @_built_in_directive
 def api_version(default=None, api_version=None, **kwargs):
-    '''Returns the current api_version as a directive for use in both request and not request handling code'''
+    """Returns the current api_version as a directive for use in both request and not request handling code"""
     return api_version
 
 
 @_built_in_directive
+def documentation(default=None, api_version=None, api=None, **kwargs):
+    """returns documentation for the current api"""
+    api_version = default or api_version
+    if api:
+        return api.http.documentation(base_url="", api_version=api_version)
+
+
+@_built_in_directive
+def session(context_name='session', request=None, **kwargs):
+    """Returns the session associated with the current request"""
+    return request and request.context.get(context_name, None)
+
+
+@_built_in_directive
+def user(default=None, request=None, **kwargs):
+    """Returns the current logged in user"""
+    return request and request.context.get('user', None) or default
+
+
+@_built_in_directive
 class CurrentAPI(object):
-    '''Returns quick access to all api functions on the current version of the api'''
+    """Returns quick access to all api functions on the current version of the api"""
     __slots__ = ('api_version', 'api')
 
     def __init__(self, default=None, api_version=None, **kwargs):
@@ -80,13 +104,13 @@ class CurrentAPI(object):
         self.api = api(**kwargs)
 
     def __getattr__(self, name):
-        function = self.api.versioned.get(self.api_version, {}).get(name, None)
+        function = self.api.http.versioned.get(self.api_version, {}).get(name, None)
         if not function:
-            function = self.api.versioned.get(None, {}).get(name, None)
+            function = self.api.http.versioned.get(None, {}).get(name, None)
         if not function:
             raise AttributeError('API Function {0} not found'.format(name))
 
-        accepts = function.interface.api_function.__code__.co_varnames
+        accepts = function.interface.arguments
         if 'hug_api_version' in accepts:
             function = partial(function, hug_api_version=self.api_version)
         if 'hug_current_api' in accepts:

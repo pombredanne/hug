@@ -2,7 +2,7 @@
 
 Tests the input format handlers included with Hug
 
-Copyright (C) 2015 Timothy Edmund Crosley
+Copyright (C) 2016 Timothy Edmund Crosley
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
@@ -19,24 +19,46 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 OTHER DEALINGS IN THE SOFTWARE.
 
 """
+import os
+from cgi import parse_header
 from io import BytesIO
+
+import requests
 
 import hug
 
+from .constants import BASE_DIRECTORY
+
 
 def test_text():
-    '''Ensure that plain text input format works as intended'''
+    """Ensure that plain text input format works as intended"""
     test_data = BytesIO(b'{"a": "b"}')
     assert hug.input_format.text(test_data) == '{"a": "b"}'
 
 
 def test_json():
-    '''Ensure that the json input format works as intended'''
+    """Ensure that the json input format works as intended"""
     test_data = BytesIO(b'{"a": "b"}')
     assert hug.input_format.json(test_data) == {'a': 'b'}
 
 
 def test_json_underscore():
-    '''Ensure that camelCase keys can be converted into under_score for easier use within Python'''
+    """Ensure that camelCase keys can be converted into under_score for easier use within Python"""
     test_data = BytesIO(b'{"CamelCase": {"becauseWeCan": "ValueExempt"}}')
     assert hug.input_format.json_underscore(test_data) == {'camel_case': {'because_we_can': 'ValueExempt'}}
+
+
+def test_urlencoded():
+    """Ensure that urlencoded input format works as intended"""
+    test_data = BytesIO(b'foo=baz&foo=bar&name=John+Doe')
+    assert hug.input_format.urlencoded(test_data) == {'name': 'John Doe', 'foo': ['baz', 'bar']}
+
+
+def test_multipart():
+    """Ensure multipart form data works as intended"""
+    with open(os.path.join(BASE_DIRECTORY, 'artwork', 'koala.png'),'rb') as koala:
+        prepared_request = requests.Request('POST', 'http://localhost/', files={'koala': koala}).prepare()
+        koala.seek(0)
+        file_content = hug.input_format.multipart(BytesIO(prepared_request.body),
+                                                  **parse_header(prepared_request.headers['Content-Type'])[1])['koala']
+        assert file_content == koala.read()

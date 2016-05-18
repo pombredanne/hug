@@ -3,7 +3,7 @@
 
 Defines the setup instructions for the hug framework
 
-Copyright (C) 2015  Timothy Edmund Crosley
+Copyright (C) 2016  Timothy Edmund Crosley
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
@@ -88,7 +88,7 @@ except (IOError, ImportError, OSError, RuntimeError):
    readme = ''
 
 setup(name='hug',
-      version='1.9.9',
+      version='2.1.2',
       description='A Python framework that makes developing APIs as simple as possible, but no simpler.',
       long_description=readme,
       author='Timothy Crosley',
@@ -97,12 +97,12 @@ setup(name='hug',
       license="MIT",
       entry_points={
         'console_scripts': [
-            'hug = hug:run.terminal',
+            'hug = hug:development_runner.hug.interface.cli',
         ]
       },
       packages=['hug'],
-      requires=['falcon'],
-      install_requires=['falcon'],
+      requires=['falcon', 'requests'],
+      install_requires=['falcon==1.0.0', 'requests'],
       cmdclass=cmdclass,
       ext_modules=ext_modules,
       keywords='Web, Python, Python3, Refactoring, REST, Framework, RPC',

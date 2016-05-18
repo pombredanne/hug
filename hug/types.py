@@ -2,7 +2,7 @@
 
 Defines hugs built-in supported types / validators
 
-Copyright (C) 2015  Timothy Edmund Crosley
+Copyright (C) 2016  Timothy Edmund Crosley
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
@@ -19,165 +19,481 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 OTHER DEALINGS IN THE SOFTWARE.
 
 """
+from __future__ import absolute_import
+
+import uuid as native_uuid
 from decimal import Decimal
 from json import loads as load_json
 
-
-def accept(formatter, doc=None, error_text=None, cli_behaviour=None, exception_handlers=None):
-    '''Allows quick wrapping any Python type converter for use with Hug type annotations'''
-    defined_exception_handlers = exception_handlers or {}
-    if defined_exception_handlers or error_text:
-        def hug_formatter(data):
-            try:
-                return formatter(data)
-            except Exception as exception:
-                for take_exception, rewrite in defined_exception_handlers.items():
-                    if isinstance(exception, take_exception):
-                        if isinstance(rewrite, str):
-                            raise ValueError(rewrite)
-                        else:
-                            raise rewrite(data)
-                if error_text:
-                    raise ValueError(error_text)
-                raise exception
-    else:
-        def hug_formatter(data):
-            return formatter(data)
-
-    new_cli_behaviour = getattr(formatter, 'cli_behaviour', {})
-    if cli_behaviour:
-        new_cli_behaviour.update(cli_behaviour)
-    if new_cli_behaviour:
-        hug_formatter.cli_behaviour = new_cli_behaviour
-    hug_formatter.__doc__ = doc or formatter.__doc__
-    return hug_formatter
+import hug._empty as empty
+from hug.exceptions import InvalidTypeData
 
 
-number = accept(int, 'A whole number', 'Invalid whole number provided')
+class Type(object):
+    """Defines the base hug concept of a type for use in function annotation.
+       Override `__call__` to define how the type should be transformed and validated
+    """
+    _hug_type = True
+    __slots__ = ()
+
+    def __init__(self, **kwargs):
+        pass
+
+    def __call__(self, value):
+        raise NotImplementedError('To implement a new type __call__ must be defined')
+
+
+def create(doc=None, error_text=None, exception_handlers=empty.dict, extend=Type, chain=True):
+    """Creates a new type handler with the specified type-casting handler"""
+    extend = extend if type(extend) == type else type(extend)
+
+    def new_type_handler(function):
+        class NewType(extend):
+            __slots__ = ()
+
+            if chain and extend != Type:
+                if error_text or exception_handlers:
+                    def __call__(self, value):
+                        try:
+                            value = super(NewType, self).__call__(value)
+                            return function(value)
+                        except Exception as exception:
+                            for take_exception, rewrite in exception_handlers.items():
+                                if isinstance(exception, take_exception):
+                                    if isinstance(rewrite, str):
+                                        raise ValueError(rewrite)
+                                    else:
+                                        raise rewrite(value)
+                            if error_text:
+                                raise ValueError(error_text)
+                            raise exception
+                else:
+                    def __call__(self, value):
+                        value = super(NewType, self).__call__(value)
+                        return function(value)
+            else:
+                if error_text or exception_handlers:
+                    def __call__(self, value):
+                        try:
+                            return function(value)
+                        except Exception as exception:
+                            for take_exception, rewrite in exception_handlers.items():
+                                if isinstance(exception, take_exception):
+                                    if isinstance(rewrite, str):
+                                        raise ValueError(rewrite)
+                                    else:
+                                        raise rewrite(value)
+                            if error_text:
+                                raise ValueError(error_text)
+                            raise exception
+                else:
+                    def __call__(self, value):
+                        return function(value)
+
+        NewType.__doc__ = function.__doc__ if doc is None else doc
+        return NewType
+
+    return new_type_handler
+
+
+def accept(kind, doc=None, error_text=None, exception_handlers=empty.dict):
+    """Allows quick wrapping of any Python type cast function for use as a hug type annotation"""
+    return create(doc, error_text, exception_handlers=exception_handlers, chain=False)(kind)()
+
+number = accept(int, 'A Whole number', 'Invalid whole number provided')
 float_number = accept(float, 'A float number', 'Invalid float number provided')
 decimal = accept(Decimal, 'A decimal number', 'Invalid decimal number provided')
-text = accept(str, 'Basic text / string value', 'Invalid text value provided')
-boolean = accept(bool, 'Providing any value will set this to true',
-                 'Invalid boolean value provided', cli_behaviour={'action': 'store_true'})
+boolean = accept(bool, 'Providing any value will set this to true', 'Invalid boolean value provided')
+uuid = accept(native_uuid.UUID, 'A Universally Unique IDentifier', 'Invalid UUID provided')
 
 
-def multiple(value):
-    '''Multiple Values'''
-    return value if isinstance(value, list) else [value]
-multiple.cli_behaviour = {'action': 'append', 'type':text}
+class Text(Type):
+    """Basic text / string value"""
+    __slots__ = ()
+
+    def __call__(self, value):
+        if type(value) in (list, tuple):
+            raise ValueError('Invalid text value provided')
+        return str(value)
+
+text = Text()
 
 
-def comma_separated_list(value):
-    '''Multiple values, separated by a comma'''
-    return value.split(",")
+class Multiple(Type):
+    """Multiple Values"""
+    __slots__ = ()
+
+    def __call__(self, value):
+        return value if isinstance(value, list) else [value]
 
 
-def smart_boolean(input_value):
-    '''Accepts a true or false value'''
-    if type(input_value) == bool or input_value in (None, 1, 0):
-        return bool(input_value)
+class DelimitedList(Multiple):
+    """Defines a list type that is formed by delimiting a list with a certain character or set of characters"""
+    __slots__ = ('using', )
 
-    value = input_value.lower()
-    if value in ('true', 't', '1'):
-        return True
-    elif value in ('false', 'f', '0', ''):
-        return False
+    def __init__(self, using=","):
+        self.using = using
 
-    raise KeyError('Invalid value passed in for true/false field')
+    @property
+    def __doc__(self):
+        return '''Multiple values, separated by "{0}"'''.format(self.using)
 
-smart_boolean.cli_behaviour = {'action': 'store_true'}
-
-
-def inline_dictionary(input_value):
-    '''A single line dictionary, where items are separted by commas and key:value are separated by a pipe'''
-    return {key.strip(): value.strip() for key, value in (item.split(":") for item in input_value.split("|"))}
+    def __call__(self, value):
+        return value if type(value) in (list, tuple) else value.split(self.using)
 
 
-def one_of(values):
-    '''Ensures the value is within a set of acceptable values'''
-    def matches(value):
-        if not value in values:
-            raise KeyError('Invalid value passed. The accepted values are: ({0})'.format("|".join(values)))
+class SmartBoolean(type(boolean)):
+    """Accepts a true or false value"""
+    __slots__ = ()
+
+    def __call__(self, value):
+        if type(value) == bool or value in (None, 1, 0):
+            return bool(value)
+
+        value = value.lower()
+        if value in ('true', 't', '1'):
+            return True
+        elif value in ('false', 'f', '0', ''):
+            return False
+
+        raise KeyError('Invalid value passed in for true/false field')
+
+
+class InlineDictionary(Type):
+    """A single line dictionary, where items are separted by commas and key:value are separated by a pipe"""
+    __slots__ = ()
+
+    def __call__(self, string):
+        return {key.strip(): value.strip() for key, value in (item.split(":") for item in string.split("|"))}
+
+
+class OneOf(Type):
+    """Ensures the value is within a set of acceptable values"""
+    __slots__ = ('values', )
+
+    def __init__(self, values):
+        self.values = values
+
+    @property
+    def __doc__(self):
+        return 'Accepts one of the following values: ({0})'.format("|".join(self.values))
+
+    def __call__(self, value):
+        if not value in self.values:
+            raise KeyError('Invalid value passed. The accepted values are: ({0})'.format("|".join(self.values)))
         return value
 
-    matches.__doc__ = 'Accepts one of the following values: ({0})'.format("|".join(values))
-    matches.cli_behaviour = {'choices': values}
-    return matches
+
+class Mapping(OneOf):
+    """Ensures the value is one of an acceptable set of values mapping those values to a Python equivelent"""
+    __slots__ = ('value_map', )
+
+    def __init__(self, value_map):
+        self.value_map = value_map
+        self.values = value_map.keys()
+
+    @property
+    def __doc__(self):
+        return 'Accepts one of the following values: ({0})'.format("|".join(self.values))
+
+    def __call__(self, value):
+        if not value in self.values:
+            raise KeyError('Invalid value passed. The accepted values are: ({0})'.format("|".join(self.values)))
+        return self.value_map[value]
 
 
-def mapping(value_map):
-    '''Ensures the value is one of an acceptable set of values mapping those values to a Python equivelent'''
-    values = value_map.keys()
-    def matches(value):
-        if not value in value_map.keys():
-            raise KeyError('Invalid value passed. The accepted values are: ({0})'.format("|".join(values)))
-        return value_map[value]
+class JSON(Type):
+    """Accepts a JSON formatted data structure"""
+    __slots__ = ()
 
-    matches.__doc__ = 'Accepts one of the following values: ({0})'.format("|".join(values))
-    matches.cli_behaviour = {'choices': values}
-    return matches
-
-
-def json(value):
-    '''Accepts a JSON formatted data structure'''
-    if type(value) in (str, bytes):
-        try:
-            return load_json(value)
-        except Exception:
-            raise ValueError('Incorrectly formatted JSON provided')
-    else:
-        return value
+    def __call__(self, value):
+        if type(value) in (str, bytes):
+            try:
+                return load_json(value)
+            except Exception:
+                raise ValueError('Incorrectly formatted JSON provided')
+        else:
+            return value
 
 
-def multi(*types):
-    '''Enables accepting one of multiple type methods'''
-    type_strings = (type_method.__doc__ for type_method in types)
-    doc_string = 'Accepts any of the following value types:{0}\n'.format('\n  - '.join(type_strings))
-    def multi_type(value):
-        for type_method in types:
+class Multi(Type):
+    """Enables accepting one of multiple type methods"""
+    __slots__ = ('types', )
+
+    def __init__(self, *types):
+       self.types = types
+
+    @property
+    def __doc__(self):
+        type_strings = (type_method.__doc__ for type_method in self.types)
+        return 'Accepts any of the following value types:{0}\n'.format('\n  - '.join(type_strings))
+
+    def __call__(self, value):
+        for type_method in self.types:
             try:
                 return type_method(value)
             except:
                 pass
-        raise ValueError(doc_string)
-    multi_type.__doc__ = doc_string
-    return multi_type
+        raise ValueError(self.__doc__)
 
 
-def in_range(lower, upper, convert=number):
-    '''Accepts a number within a lower and upper bound of acceptable values'''
-    def check_in_range(value):
-        value = convert(value)
-        if value < lower:
-            raise ValueError("'{0}' is less than the lower limit {1}".format(value, lower))
-        if value >= upper:
-            raise ValueError("'{0}' reaches the limit of {1}".format(value, upper))
+class InRange(Type):
+    """Accepts a number within a lower and upper bound of acceptable values"""
+    __slots__ = ('lower', 'upper', 'convert')
+
+    def __init__(self, lower, upper, convert=number):
+        self.lower = lower
+        self.upper = upper
+        self.convert = convert
+
+    @property
+    def __doc__(self):
+        return "{0} that is greater or equal to {1} and less than {2}".format(self.convert.__doc__,
+                                                                              self.lower, self.upper)
+
+    def __call__(self, value):
+        value = self.convert(value)
+        if value < self.lower:
+            raise ValueError("'{0}' is less than the lower limit {1}".format(value, self.lower))
+        if value >= self.upper:
+            raise ValueError("'{0}' reaches the limit of {1}".format(value, self.upper))
         return value
 
-    check_in_range.__doc__ = ("{0} that is greater or equal to {1} and less than {2}".format(
-                              convert.__doc__, lower, upper))
-    return check_in_range
 
+class LessThan(Type):
+    """Accepts a number within a lower and upper bound of acceptable values"""
+    __slots__ = ('limit', 'convert')
 
-def less_than(limit, convert=number):
-    '''Accepts a value up to the specified limit'''
-    def check_less_than(value):
-        value = convert(value)
-        if not value < limit:
-            raise ValueError("'{0}' must be less than {1}".format(value, limit))
+    def __init__(self, limit, convert=number):
+        self.limit = limit
+        self.convert = convert
+
+    @property
+    def __doc__(self):
+         return "{0} that is less than {1}".format(self.convert.__doc__, self.limit)
+
+    def __call__(self, value):
+        value = self.convert(value)
+        if not value < self.limit:
+            raise ValueError("'{0}' must be less than {1}".format(value, self.limit))
         return value
 
-    check_less_than.__doc__ = "{0} that is less than {1}".format(convert.__doc__, limit)
-    return check_less_than
 
+class GreaterThan(Type):
+    """Accepts a value above a given minimum"""
+    __slots__ = ('minimum', 'convert')
 
-def greater_than(minimum, convert=number):
-    '''Accepts a value above a given minimum'''
-    def check_greater_than(value):
-        value = convert(value)
-        if not value > minimum:
-            raise ValueError("'{0}' must be greater than {1}".format(value, minimum))
+    def __init__(self, minimum, convert=number):
+        self.minimum = minimum
+        self.convert = convert
+
+    @property
+    def __doc__(self):
+        return "{0} that is greater than {1}".format(self.convert.__doc__, self.minimum)
+
+    def __call__(self, value):
+        value = self.convert(value)
+        if not value > self.minimum:
+            raise ValueError("'{0}' must be greater than {1}".format(value, self.minimum))
         return value
 
-    check_greater_than.__doc__ = "{0} that is greater than {1}".format(convert.__doc__, minimum)
-    return check_greater_than
+
+class Length(Type):
+    """Accepts a a value that is withing a specific length limit"""
+    __slots__ = ('lower', 'upper', 'convert')
+
+    def __init__(self, lower, upper, convert=text):
+        self.lower = lower
+        self.upper = upper
+        self.convert = convert
+
+    @property
+    def __doc__(self):
+        return ("{0} that has a length longer or equal to {1} and less then {2}".format(self.convert.__doc__,
+                                                                                        self.lower, self.upper))
+
+    def __call__(self, value):
+        value = self.convert(value)
+        length = len(value)
+        if length < self.lower:
+            raise ValueError("'{0}' is shorter than the lower limit of {1}".format(value, self.lower))
+        if length >= self.upper:
+            raise ValueError("'{0}' is longer then the allowed limit of {1}".format(value, self.upper))
+        return value
+
+
+class ShorterThan(Type):
+    """Accepts a text value shorter than the specified length limit"""
+    __slots__ = ('limit', 'convert')
+
+    def __init__(self, limit, convert=text):
+        self.limit = limit
+        self.convert = convert
+
+    @property
+    def __doc__(self):
+        return "{0} with a length of no more than {1}".format(self.convert.__doc__, self.limit)
+
+    def __call__(self, value):
+        value = self.convert(value)
+        length = len(value)
+        if not length < self.limit:
+            raise ValueError("'{0}' is longer then the allowed limit of {1}".format(value, self.limit))
+        return value
+
+
+class LongerThan(Type):
+    """Accepts a value up to the specified limit"""
+    __slots__ = ('limit', 'convert')
+
+    def __init__(self, limit, convert=text):
+        self.limit = limit
+        self.convert = convert
+
+    @property
+    def __doc__(self):
+        return "{0} with a length longer than {1}".format(self.convert.__doc__, self.limit)
+
+    def __call__(self, value):
+        value = self.convert(value)
+        length = len(value)
+        if not length > self.limit:
+            raise ValueError("'{0}' must be longer than {1}".format(value, self.limit))
+        return value
+
+
+class CutOff(Type):
+    """Cuts off the provided value at the specified index"""
+    __slots__ = ('limit', 'convert')
+
+    def __init__(self, limit, convert=text):
+        self.limit = limit
+        self.convert = convert
+
+    @property
+    def __doc__(self):
+        return "'{0}' with anything over the length of {1} being ignored".format(self.convert.__doc__, self.limit)
+
+    def __call__(self, value):
+        return self.convert(value)[:self.limit]
+
+
+class Chain(Type):
+    """type for chaining multiple types together"""
+    __slots__ = ('types', )
+
+    def __init__(self, *types):
+        self.types = types
+
+    def __call__(self, value):
+        for type_function in self.types:
+            value = type_function(value)
+        return value
+
+
+class Nullable(Chain):
+    """A Chain types that Allows None values"""
+    __slots__ = ('types', )
+
+    def __init__(self, *types):
+        self.types = types
+
+    def __call__(self, value):
+        if value is None:
+            return None
+        else:
+            return super(Nullable, self).__call__(value)
+
+
+class TypedProperty(object):
+    """class for building property objects for schema objects"""
+    __slots__ = ('name', 'type_func')
+
+    def __init__(self, name, type_func):
+        self.name = "_" + name
+        self.type_func = type_func
+
+    def __get__(self, instance, cls):
+        return getattr(instance, self.name, None)
+
+    def __set__(self, instance, value):
+        setattr(instance, self.name, self.type_func(value))
+
+    def __delete__(self, instance):
+        raise AttributeError("Can't delete attribute")
+
+
+class NewTypeMeta(type):
+    """Meta class to turn Schema objects into format usable by hug"""
+    __slots__ = ()
+
+    def __init__(cls, name, bases, nmspc):
+        cls._types = {attr: getattr(cls, attr) for attr in dir(cls) if getattr(getattr(cls, attr), "_hug_type", False)}
+        slots = getattr(cls, "__slots__", ())
+        slots = set(slots)
+        for attr, type_func in cls._types.items():
+            slots.add("_" + attr)
+            slots.add(attr)
+            prop = TypedProperty(attr, type_func)
+            setattr(cls, attr, prop)
+        cls.__slots__ = tuple(slots)
+        super(NewTypeMeta, cls).__init__(name, bases, nmspc)
+
+
+class Schema(object, metaclass=NewTypeMeta):
+    """Schema for creating complex types using hug types"""
+    _hug_type = True
+    __slots__ = ()
+
+    def __new__(cls, json, *args, **kwargs):
+        if json.__class__ == cls:
+            return json
+        else:
+            return super(Schema, cls).__new__(cls)
+
+    def __init__(self, json, force=False):
+        if self != json:
+            for (key, value) in json.items():
+                if force:
+                    key = "_" + key
+                setattr(self, key, value)
+
+json = JSON()
+
+
+class MarshmallowSchema(Type):
+    """Allows using a Marshmallow Schema directly in a hug type annotation"""
+    __slots__ = ("schema", )
+
+    def __init__(self, schema):
+        self.schema = schema
+
+    @property
+    def __doc__(self):
+        return self.schema.__doc__ or self.schema.__class__.__name__
+
+    def __call__(self, value):
+        value, errors = self.schema.loads(value) if isinstance(value, str) else self.schema.load(value)
+        if errors:
+            raise InvalidTypeData('Invalid {0} passed in'.format(self.schema.__class__.__name__), errors)
+        return value
+
+
+multiple = Multiple()
+smart_boolean = SmartBoolean()
+inline_dictionary = InlineDictionary()
+comma_separated_list = DelimitedList(using=",")
+
+
+# NOTE: These forms are going to be DEPRECATED, here for backwards compatibility only
+delimited_list = DelimitedList
+one_of = OneOf
+mapping = Mapping
+multi = Multi
+in_range = InRange
+less_than = LessThan
+greater_than = GreaterThan
+length = Length
+shorter_than = ShorterThan
+longer_than = LongerThan
+cut_off = CutOff

@@ -2,7 +2,7 @@
 
 Defines utility function that aid in the round-trip testing of Hug APIs
 
-Copyright (C) 2015  Timothy Edmund Crosley
+Copyright (C) 2016  Timothy Edmund Crosley
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
@@ -19,10 +19,12 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 OTHER DEALINGS IN THE SOFTWARE.
 
 """
-from io import BytesIO
-import sys
+from __future__ import absolute_import
+
 import json
+import sys
 from functools import partial
+from io import BytesIO
 from unittest import mock
 from urllib.parse import urlencode
 
@@ -30,19 +32,20 @@ from falcon import HTTP_METHODS
 from falcon.testing import StartResponseMock, create_environ
 
 from hug import output_format
-from hug.run import server
+from hug.api import API
 
 
-def call(method, api_module, url, body='', headers=None, **params):
-    '''Simulates a round-trip call against the given api_module / url'''
-    api = server(api_module)
+def call(method, api_or_module, url, body='', headers=None, **params):
+    """Simulates a round-trip call against the given API / URL"""
+    api = API(api_or_module).http.server()
     response = StartResponseMock()
-    if not isinstance(body, str):
+    headers = {} if headers is None else headers
+    if not isinstance(body, str) and 'json' in headers.get('content-type', 'application/json'):
         body = output_format.json(body)
-        headers = {} if headers is None else headers
-        headers['content-type'] = 'application/json'
+        headers.setdefault('content-type', 'application/json')
 
-    result = api(create_environ(path=url, method=method, headers=headers, query_string=urlencode(params), body=body),
+    result = api(create_environ(path=url, method=method, headers=headers, query_string=urlencode(params, True),
+                                body=body),
                  response)
     if result:
         try:
@@ -63,12 +66,12 @@ def call(method, api_module, url, body='', headers=None, **params):
 
 for method in HTTP_METHODS:
     tester = partial(call, method)
-    tester.__doc__ = '''Simulates a round-trip HTTP {0} against the given api_module / url'''.format(method.upper())
+    tester.__doc__ = """Simulates a round-trip HTTP {0} against the given API / URL""".format(method.upper())
     globals()[method.lower()] = tester
 
 
 def cli(method, *kargs, **arguments):
-    '''Simulates testing a hug cli method from the command line'''
+    """Simulates testing a hug cli method from the command line"""
     collect_output = arguments.pop('collect_output', True)
 
     command_args = [method.__name__] + list(kargs)
@@ -83,17 +86,16 @@ def cli(method, *kargs, **arguments):
     old_sys_argv = sys.argv
     sys.argv = [str(part) for part in command_args]
 
-    old_output = method.cli.output
+    old_output = method.interface.cli.output
     if collect_output:
-        method.cli.output = lambda data: to_return.append(data)
+        method.interface.cli.outputs = lambda data: to_return.append(data)
     to_return = []
 
     try:
-        method.cli()
+        method.interface.cli()
     except Exception as e:
         to_return = (e, )
 
-    method.cli.output = old_output
+    method.interface.cli.output = old_output
     sys.argv = old_sys_argv
     return to_return and to_return[0] or None
-

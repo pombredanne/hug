@@ -2,7 +2,7 @@
 
 Tests the documentation generation capibilities integrated into Hug
 
-Copyright (C) 2015 Timothy Edmund Crosley
+Copyright (C) 2016 Timothy Edmund Crosley
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation
@@ -20,91 +20,106 @@ OTHER DEALINGS IN THE SOFTWARE.
 
 """
 import json
-import sys
 
 from falcon import Request
 from falcon.testing import StartResponseMock, create_environ
 
 import hug
 
-api = sys.modules[__name__]
+api = hug.API(__name__)
 
 
 def test_basic_documentation():
-    '''Ensure creating and then documenting APIs with Hug works as intuitively as expected'''
+    """Ensure creating and then documenting APIs with Hug works as intuitively as expected"""
     @hug.get()
     def hello_world():
-        '''Returns hello world'''
+        """Returns hello world"""
         return "Hello World!"
 
     @hug.post()
     def echo(text):
-        '''Returns back whatever data it is given in the text parameter'''
+        """Returns back whatever data it is given in the text parameter"""
         return text
 
     @hug.post('/happy_birthday', examples="name=HUG&age=1")
-    def birthday(name, age:hug.types.number=1):
-        '''Says happy birthday to a user'''
+    def birthday(name, age: hug.types.number=1):
+        """Says happy birthday to a user"""
         return "Happy {age} Birthday {name}!".format(**locals())
 
     @hug.post()
     def noop(request, response):
-        '''Performs no action'''
+        """Performs no action"""
         pass
 
     @hug.get()
-    def string_docs(data:'Takes data') -> 'Returns data':
-        '''Annotations defined with strings should be documentation only'''
+    def string_docs(data: 'Takes data', ignore_directive: hug.directives.Timer) -> 'Returns data':
+        """Annotations defined with strings should be documentation only"""
         pass
 
-    documentation = hug.documentation.generate(api)
+    documentation = api.http.documentation()
     assert 'test_documentation' in documentation['overview']
 
-    assert '/hello_world' in documentation
-    assert '/echo' in documentation
-    assert '/happy_birthday' in documentation
-    assert not '/birthday' in documentation
-    assert '/noop' in documentation
-    assert '/string_docs' in documentation
+    assert '/hello_world' in documentation['handlers']
+    assert '/echo' in documentation['handlers']
+    assert '/happy_birthday' in documentation['handlers']
+    assert not '/birthday' in documentation['handlers']
+    assert '/noop' in documentation['handlers']
+    assert '/string_docs' in documentation['handlers']
 
-    assert documentation['/hello_world']['GET']['usage']  == "Returns hello world"
-    assert documentation['/hello_world']['GET']['examples']  == ["/hello_world"]
-    assert documentation['/hello_world']['GET']['outputs']['content_type']  == "application/json"
-    assert not 'inputs' in documentation['/hello_world']['GET']
+    assert documentation['handlers']['/hello_world']['GET']['usage'] == "Returns hello world"
+    assert documentation['handlers']['/hello_world']['GET']['examples'] == ["/hello_world"]
+    assert documentation['handlers']['/hello_world']['GET']['outputs']['content_type'] == "application/json"
+    assert not 'inputs' in documentation['handlers']['/hello_world']['GET']
 
-    assert 'text' in documentation['/echo']['POST']['inputs']['text']['type']
-    assert not 'default' in documentation['/echo']['POST']['inputs']['text']
+    assert 'text' in documentation['handlers']['/echo']['POST']['inputs']['text']['type']
+    assert not 'default' in documentation['handlers']['/echo']['POST']['inputs']['text']
 
-    assert 'number' in documentation['/happy_birthday']['POST']['inputs']['age']['type']
-    assert documentation['/happy_birthday']['POST']['inputs']['age']['default'] == 1
+    assert 'number' in documentation['handlers']['/happy_birthday']['POST']['inputs']['age']['type']
+    assert documentation['handlers']['/happy_birthday']['POST']['inputs']['age']['default'] == 1
 
-    assert not 'inputs' in documentation['/noop']['POST']
+    assert not 'inputs' in documentation['handlers']['/noop']['POST']
 
-    assert documentation['/string_docs']['GET']['inputs']['data']['type'] == 'Takes data'
-    assert documentation['/string_docs']['GET']['outputs']['type'] == 'Returns data'
+    assert documentation['handlers']['/string_docs']['GET']['inputs']['data']['type'] == 'Takes data'
+    assert documentation['handlers']['/string_docs']['GET']['outputs']['type'] == 'Returns data'
+    assert not 'ignore_directive' in documentation['handlers']['/string_docs']['GET']['inputs']
 
-    @hug.post(versions=1)
+    @hug.post(versions=1)  # noqa
     def echo(text):
         """V1 Docs"""
         return 'V1'
 
-    @hug.get()
+    @hug.post(versions=2)  # noqa
+    def echo(text):
+        """V1 Docs"""
+        return 'V2'
+
+    @hug.post(versions=2)
+    def test(text):
+        """V1 Docs"""
+        return True
+
+    @hug.get(requires=test)
     def unversioned():
         return 'Hello'
 
-    versioned_doc = hug.documentation.generate(api)
+    versioned_doc = api.http.documentation()
     assert 'versions' in versioned_doc
     assert 1 in versioned_doc['versions']
-    assert '/unversioned' in versioned_doc['versions'][1]
+    assert '/unversioned' in versioned_doc['handlers']
+    assert '/echo' in versioned_doc['handlers']
+    assert '/test' in versioned_doc['handlers']
 
-    specific_version_doc  = hug.documentation.generate(api, api_version=1)
-    assert not 'versions' in specific_version_doc
-    assert '/echo' in specific_version_doc
-    assert '/unversioned' in specific_version_doc
+    specific_version_doc = api.http.documentation(api_version=1)
+    assert 'versions' in specific_version_doc
+    assert '/echo' in specific_version_doc['handlers']
+    assert '/unversioned' in specific_version_doc['handlers']
+    assert specific_version_doc['handlers']['/unversioned']['GET']['requires'] == ['V1 Docs']
+    assert '/test' not in specific_version_doc['handlers']
 
-    handler = hug.run.documentation_404(api)
+    handler = api.http.documentation_404()
     response = StartResponseMock()
     handler(Request(create_environ(path='v1/doc')), response)
     documentation = json.loads(response.data.decode('utf8'))['documentation']
-    assert not 'versions' in documentation
-    assert '/echo' in documentation
+    assert 'versions' in documentation
+    assert '/echo' in documentation['handlers']
+    assert '/test' not in documentation['handlers']
