@@ -23,10 +23,11 @@ from __future__ import absolute_import
 
 import uuid as native_uuid
 from decimal import Decimal
-from json import loads as load_json
 
 import hug._empty as empty
+from hug import introspect
 from hug.exceptions import InvalidTypeData
+from hug.json_module import json as json_converter
 
 
 class Type(object):
@@ -34,16 +35,16 @@ class Type(object):
        Override `__call__` to define how the type should be transformed and validated
     """
     _hug_type = True
-    __slots__ = ()
+    _sub_type = None
 
-    def __init__(self, **kwargs):
+    def __init__(self):
         pass
 
     def __call__(self, value):
         raise NotImplementedError('To implement a new type __call__ must be defined')
 
 
-def create(doc=None, error_text=None, exception_handlers=empty.dict, extend=Type, chain=True):
+def create(doc=None, error_text=None, exception_handlers=empty.dict, extend=Type, chain=True, auto_instance=True):
     """Creates a new type handler with the specified type-casting handler"""
     extend = extend if type(extend) == type else type(extend)
 
@@ -91,6 +92,10 @@ def create(doc=None, error_text=None, exception_handlers=empty.dict, extend=Type
                         return function(value)
 
         NewType.__doc__ = function.__doc__ if doc is None else doc
+        if auto_instance and not (introspect.arguments(NewType.__init__, -1) or
+                                  introspect.takes_kwargs(NewType.__init__) or
+                                  introspect.takes_args(NewType.__init__)):
+            return NewType()
         return NewType
 
     return new_type_handler
@@ -98,7 +103,7 @@ def create(doc=None, error_text=None, exception_handlers=empty.dict, extend=Type
 
 def accept(kind, doc=None, error_text=None, exception_handlers=empty.dict):
     """Allows quick wrapping of any Python type cast function for use as a hug type annotation"""
-    return create(doc, error_text, exception_handlers=exception_handlers, chain=False)(kind)()
+    return create(doc, error_text, exception_handlers=exception_handlers, chain=False)(kind)
 
 number = accept(int, 'A Whole number', 'Invalid whole number provided')
 float_number = accept(float, 'A float number', 'Invalid float number provided')
@@ -112,26 +117,36 @@ class Text(Type):
     __slots__ = ()
 
     def __call__(self, value):
-        if type(value) in (list, tuple):
+        if type(value) in (list, tuple) or value is None:
             raise ValueError('Invalid text value provided')
         return str(value)
 
 text = Text()
 
 
-class Multiple(Type):
+class SubTyped(type):
+    def __getitem__(cls, sub_type):
+        class TypedSubclass(cls):
+            _sub_type = sub_type
+        return TypedSubclass
+
+
+class Multiple(Type, metaclass=SubTyped):
     """Multiple Values"""
     __slots__ = ()
 
     def __call__(self, value):
-        return value if isinstance(value, list) else [value]
+        as_multiple = value if isinstance(value, list) else [value]
+        if self._sub_type:
+            return [self._sub_type(item) for item in as_multiple]
+        return as_multiple
 
 
-class DelimitedList(Multiple):
+
+class DelimitedList(Type, metaclass=SubTyped):
     """Defines a list type that is formed by delimiting a list with a certain character or set of characters"""
-    __slots__ = ('using', )
-
     def __init__(self, using=","):
+        super().__init__()
         self.using = using
 
     @property
@@ -139,7 +154,10 @@ class DelimitedList(Multiple):
         return '''Multiple values, separated by "{0}"'''.format(self.using)
 
     def __call__(self, value):
-        return value if type(value) in (list, tuple) else value.split(self.using)
+        value_list = value if type(value) in (list, tuple) else value.split(self.using)
+        if self._sub_type:
+            value_list = [self._sub_type(val) for val in value_list]
+        return value_list
 
 
 class SmartBoolean(type(boolean)):
@@ -159,12 +177,26 @@ class SmartBoolean(type(boolean)):
         raise KeyError('Invalid value passed in for true/false field')
 
 
-class InlineDictionary(Type):
+class InlineDictionary(Type, metaclass=SubTyped):
     """A single line dictionary, where items are separted by commas and key:value are separated by a pipe"""
-    __slots__ = ()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.key_type = self.value_type = None
+        if self._sub_type:
+            if type(self._sub_type) in (tuple, list):
+                if len(self._sub_type) >= 2:
+                    self.key_type, self.value_type = self._sub_type[:2]
+            else:
+                self.key_type = self._sub_type
 
     def __call__(self, string):
-        return {key.strip(): value.strip() for key, value in (item.split(":") for item in string.split("|"))}
+        dictionary = {}
+        for key, value in (item.split(":") for item in string.split("|")):
+            key, value = key.strip(), value.strip()
+            dictionary[self.key_type(key)
+                       if self.key_type else key] = self.value_type(value) if self.value_type else value
+        return dictionary
 
 
 class OneOf(Type):
@@ -209,7 +241,7 @@ class JSON(Type):
     def __call__(self, value):
         if type(value) in (str, bytes):
             try:
-                return load_json(value)
+                return json_converter.loads(value)
             except Exception:
                 raise ValueError('Incorrectly formatted JSON provided')
         else:
@@ -442,7 +474,6 @@ class NewTypeMeta(type):
 
 class Schema(object, metaclass=NewTypeMeta):
     """Schema for creating complex types using hug types"""
-    _hug_type = True
     __slots__ = ()
 
     def __new__(cls, json, *args, **kwargs):

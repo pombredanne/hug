@@ -2,6 +2,6 @@ import hug
 
 
 @hug.get()
-def hello():
-    """Says hello"""
-    return 'Hello World!'
+def hello(request):
+    """Says hellos"""
+    return 'Hello Worlds for Bacon?!'

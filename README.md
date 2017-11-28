@@ -3,7 +3,7 @@
 
 [![PyPI version](https://badge.fury.io/py/hug.svg)](http://badge.fury.io/py/hug)
 [![Build Status](https://travis-ci.org/timothycrosley/hug.svg?branch=master)](https://travis-ci.org/timothycrosley/hug)
-[![Windows Build Status](https://ci.appveyor.com/api/projects/status/0h7ynsqrbaxs7hfm/branch/master)](https://ci.appveyor.com/project/TimothyCrosley/hug)
+[![Windows Build Status](https://ci.appveyor.com/api/projects/status/0h7ynsqrbaxs7hfm/branch/master?svg=true)](https://ci.appveyor.com/project/TimothyCrosley/hug)
 [![Coverage Status](https://coveralls.io/repos/timothycrosley/hug/badge.svg?branch=master&service=github)](https://coveralls.io/github/timothycrosley/hug?branch=master)
 [![License](https://img.shields.io/github/license/mashape/apistatus.svg)](https://pypi.python.org/pypi/hug/)
 [![Join the chat at https://gitter.im/timothycrosley/hug](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/timothycrosley/hug?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
@@ -16,7 +16,7 @@ hug's Design Objectives:
 
 - Make developing a Python driven API as succinct as a written definition.
 - The framework should encourage code that self-documents.
-- It should be fast. Never should a developer feel the need to look somewhere else for performance reasons.
+- It should be fast. A developer should never feel the need to look somewhere else for performance reasons.
 - Writing tests for APIs written on-top of hug should be easy and intuitive.
 - Magic done once, in an API framework, is better than pushing the problem set to the user of the API framework.
 - Be the basis for next generation Python APIs, embracing the latest technology.
@@ -50,7 +50,7 @@ import hug
 
 @hug.get('/happy_birthday')
 def happy_birthday(name, age:hug.types.number=1):
-    """Says happy birthday to a user"""
+    """Says happy birthday to a user"""
     return "Happy {age} Birthday {name}!".format(**locals())
 ```
 
@@ -60,8 +60,35 @@ To run, from the command line type:
 hug -f happy_birthday.py
 ```
 
-You can access the example in your browser at: `localhost:8000/happy_birthday?name=hug&age=1`. Then check out the documentation for your API at `localhost:8000/documentation`
+You can access the example in your browser at:
+`localhost:8000/happy_birthday?name=hug&age=1`. Then check out the
+documentation for your API at `localhost:8000/documentation`
 
+Parameters can also be encoded in the URL (check
+out [`happy_birthday.py`](examples/happy_birthday.py) for the whole
+example).
+
+```py
+@hug.get('/greet/{event}')
+def greet(event: str):
+    """Greets appropriately (from http://blog.ketchum.com/how-to-write-10-common-holiday-greetings/)  """
+    greetings = "Happy"
+    if event == "Christmas":
+        greetings = "Merry"
+    if event == "Kwanzaa":
+        greetings = "Joyous"
+    if event == "wishes":
+        greetings = "Warm"
+
+    return "{greetings} {event}!".format(**locals())
+```
+
+Which, once you are running the server as above, you can use this way:
+
+```
+curl http://localhost:8000/greet/wishes
+"Warm wishes!"
+```
 
 Versioning with hug
 ===================
@@ -95,14 +122,24 @@ Note: versioning in hug automatically supports both the version header as well a
 Testing hug APIs
 ===================
 
-hug's `http` method decorators don't modify your original functions. This makes testing hug APIs as simple as testing any other Python functions. Additionally, this means interacting with your API functions in other Python code is as straight forward as calling Python only API functions. Additionally, hug makes it easy to test the full Python stack of your API by using the `hug.test` module:
+hug's `http` method decorators don't modify your original functions. This makes testing hug APIs as simple as testing any other Python functions. Additionally, this means interacting with your API functions in other Python code is as straight forward as calling Python only API functions. hug makes it easy to test the full Python stack of your API by using the `hug.test` module:
 
-```py
+```python
 import hug
 import happy_birthday
 
 hug.test.get(happy_birthday, 'happy_birthday', {'name': 'Timothy', 'age': 25}) # Returns a Response object
 ```
+
+You can use this `Response` object for test assertions (check
+out [`test_happy_birthday.py`](examples/test_happy_birthday.py) ):
+
+```python
+def tests_happy_birthday():
+    response = hug.test.get(happy_birthday, 'happy_birthday', {'name': 'Timothy', 'age': 25})
+    assert response.status == HTTP_200
+    assert response.data is not None
+``` 
 
 
 Running hug with other WSGI based servers
@@ -122,7 +159,7 @@ To run the hello world hug example API.
 Building Blocks of a hug API
 ===================
 
-When Building an API using the hug framework you'll use the following concepts:
+When building an API using the hug framework you'll use the following concepts:
 
 **METHOD Decorators** `get`, `post`, `update`, etc HTTP method decorators that expose your Python function as an API while keeping your Python method unchanged
 
@@ -142,7 +179,8 @@ def math(number_1:int, number_2:int): #The :int after both arguments is the Type
     return number_1 + number_2
 ```
 
-Type annotations also feed into hug's automatic documentation generation to let users of your API know what data to supply.
+Type annotations also feed into `hug`'s automatic documentation
+generation to let users of your API know what data to supply. 
 
 
 **Directives** functions that get executed with the request / response data based on being requested as an argument in your api_function.
@@ -167,6 +205,7 @@ def square(value=1, **kwargs):
     return value * value
 
 @hug.get()
+@hug.local()
 def tester(value: square=10):
     return value
 
@@ -182,6 +221,7 @@ def multiply(value=1, **kwargs):
     return value * value
 
 @hug.get()
+@hug.local()
 def tester(hug_multiply=10):
     return hug_multiply
 
@@ -332,10 +372,52 @@ NOTE: Hug is running on top Falcon which is not an asynchronous server. Even if 
 asyncio, requests will still be processed synchronously.
 
 
+Using Docker
+===================
+If you like to develop in Docker and keep your system clean, you can do that but you'll need to first install [Docker Compose](https://docs.docker.com/compose/install/).
+
+Once you've done that, you'll need to `cd` into the `docker` directory and run the web server (Gunicorn) specified in `./docker/gunicorn/Dockerfile`, after which you can preview the output of your API in the browser on your host machine.
+
+```bash
+$ cd ./docker
+# This will run Gunicorn on port 8000 of the Docker container.
+$ docker-compose up gunicorn
+
+# From the host machine, find your Dockers IP address.
+# For Windows & Mac:
+$ docker-machine ip default
+
+# For Linux:
+$ ifconfig docker0 | grep 'inet' | cut -d: -f2 | awk '{ print $1}' | head -n1
+```
+
+By default, the IP is 172.17.0.1. Assuming that's the IP you see, as well, you would then go to `http://172.17.0.1:8000/` in your browser to view your API.
+
+You can also log into a Docker container that you can consider your work space. This workspace has Python and Pip installed so you can use those tools within Docker. If you need to test the CLI interface, for example, you would use this.
+
+```bash
+$ docker-compose run workspace bash
+```
+
+On your Docker `workspace` container, the `./docker/templates` directory on your host computer is mounted to `/src` in the Docker container. This is specified under `services` > `app` of `./docker/docker-compose.yml`.
+
+```bash
+bash-4.3# cd /src
+bash-4.3# tree
+.
+├── __init__.py
+└── handlers
+    ├── birthday.py
+    └── hello.py
+
+1 directory, 3 files
+```
+
+
 Why hug?
 ===================
 
-HUG simply stands for Hopefully Useful Guide. This represents the projects goal to help guide developers into creating well written and intuitive APIs.
+HUG simply stands for Hopefully Useful Guide. This represents the project's goal to help guide developers into creating well written and intuitive APIs.
 
 --------------------------------------------
 

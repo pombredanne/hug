@@ -34,7 +34,7 @@ class TestRouter(object):
         """Test to ensure the route instanciates as expected"""
         assert self.route.route['transform'] == 'transform'
         assert self.route.route['output'] == 'output'
-        assert not 'api' in self.route.route
+        assert 'api' not in self.route.route
 
     def test_output(self):
         """Test to ensure modifying the output argument has the desired effect"""
@@ -62,6 +62,10 @@ class TestRouter(object):
     def test_requires(self):
         """Test to ensure requirements can be added on the fly"""
         assert self.route.requires(('values', )).route['requires'] == ('values', )
+
+    def test_map_params(self):
+        """Test to ensure it is possible to set param mappings on the routing object"""
+        assert self.route.map_params(id='user_id').route['map_params'] == {'id': 'user_id'}
 
     def test_where(self):
         """Test to ensure `where` can be used to replace all arguments on the fly"""
@@ -106,7 +110,7 @@ class TestInternalValidation(TestRouter):
 
     def test_raise_on_invalid(self):
         """Test to ensure it's possible to set a raise on invalid handler per route"""
-        assert not 'raise_on_invalid' in self.route.route
+        assert 'raise_on_invalid' not in self.route.route
         assert self.route.raise_on_invalid().route['raise_on_invalid']
 
     def test_on_invalid(self):
@@ -124,27 +128,27 @@ class TestLocalRouter(TestInternalValidation):
 
     def test_validate(self):
         """Test to ensure changing wether a local route should validate or not works as expected"""
-        assert not 'skip_validation' in self.route.route
+        assert 'skip_validation' not in self.route.route
 
         route = self.route.validate()
-        assert not 'skip_validation' in route.route
+        assert 'skip_validation' not in route.route
 
         route = self.route.validate(False)
         assert 'skip_validation' in route.route
 
     def test_directives(self):
         """Test to ensure changing wether a local route should supply directives or not works as expected"""
-        assert not 'skip_directives' in self.route.route
+        assert 'skip_directives' not in self.route.route
 
         route = self.route.directives()
-        assert not 'skip_directives' in route.route
+        assert 'skip_directives' not in route.route
 
         route = self.route.directives(False)
         assert 'skip_directives' in route.route
 
     def test_version(self):
         """Test to ensure changing the version of a LocalRoute on the fly works"""
-        assert not 'version' in self.route.route
+        assert 'version' not in self.route.route
 
         route = self.route.version(2)
         assert 'version' in route.route
@@ -163,7 +167,7 @@ class TestHTTPRouter(TestInternalValidation):
     def test_parse_body(self):
         """Test to ensure the parsing body flag be flipped on the fly"""
         assert self.route.parse_body().route['parse_body']
-        assert not 'parse_body' in self.route.parse_body(False).route
+        assert 'parse_body' not in self.route.parse_body(False).route
 
     def test_requires(self):
         """Test to ensure requirements can be added on the fly"""
@@ -208,10 +212,20 @@ class TestHTTPRouter(TestInternalValidation):
 
     def test_allow_origins(self):
         """Test to ensure it's easy to expose route to other resources"""
-        assert self.route.allow_origins().route['response_headers']['Access-Control-Allow-Origin'] == '*'
-        test_headers = self.route.allow_origins('google.com', methods=('GET', 'POST')).route['response_headers']
-        assert test_headers['Access-Control-Allow-Origin'] == 'google.com'
+        test_headers = self.route.allow_origins(methods=('GET', 'POST'), credentials=True,
+                                                headers="OPTIONS", max_age=10).route['response_headers']
+        assert test_headers['Access-Control-Allow-Origin'] == '*'
         assert test_headers['Access-Control-Allow-Methods'] == 'GET, POST'
+        assert test_headers['Access-Control-Allow-Credentials'] == 'true'
+        assert test_headers['Access-Control-Allow-Headers'] == 'OPTIONS'
+        assert test_headers['Access-Control-Max-Age'] == 10
+        test_headers = self.route.allow_origins('google.com', methods=('GET', 'POST'), credentials=True,
+                                                headers="OPTIONS", max_age=10).route['response_headers']
+        assert 'Access-Control-Allow-Origin' not in test_headers
+        assert test_headers['Access-Control-Allow-Methods'] == 'GET, POST'
+        assert test_headers['Access-Control-Allow-Credentials'] == 'true'
+        assert test_headers['Access-Control-Allow-Headers'] == 'OPTIONS'
+        assert test_headers['Access-Control-Max-Age'] == 10
 
 
 class TestStaticRouter(TestHTTPRouter):
@@ -259,47 +273,47 @@ class TestURLRouter(TestHTTPRouter):
     def test_get(self):
         """Test to ensure the HTTP METHOD can be set to just GET on the fly"""
         assert self.route.get().route['accept'] == ('GET', )
-        assert self.route.get('url').route['urls'] == ('url', )
+        assert self.route.get('/url').route['urls'] == ('/url', )
 
     def test_delete(self):
         """Test to ensure the HTTP METHOD can be set to just DELETE on the fly"""
         assert self.route.delete().route['accept'] == ('DELETE', )
-        assert self.route.delete('url').route['urls'] == ('url', )
+        assert self.route.delete('/url').route['urls'] == ('/url', )
 
     def test_post(self):
         """Test to ensure the HTTP METHOD can be set to just POST on the fly"""
         assert self.route.post().route['accept'] == ('POST', )
-        assert self.route.post('url').route['urls'] == ('url', )
+        assert self.route.post('/url').route['urls'] == ('/url', )
 
     def test_put(self):
         """Test to ensure the HTTP METHOD can be set to just PUT on the fly"""
         assert self.route.put().route['accept'] == ('PUT', )
-        assert self.route.put('url').route['urls'] == ('url', )
+        assert self.route.put('/url').route['urls'] == ('/url', )
 
     def test_trace(self):
         """Test to ensure the HTTP METHOD can be set to just TRACE on the fly"""
         assert self.route.trace().route['accept'] == ('TRACE', )
-        assert self.route.trace('url').route['urls'] == ('url', )
+        assert self.route.trace('/url').route['urls'] == ('/url', )
 
     def test_patch(self):
         """Test to ensure the HTTP METHOD can be set to just PATCH on the fly"""
         assert self.route.patch().route['accept'] == ('PATCH', )
-        assert self.route.patch('url').route['urls'] == ('url', )
+        assert self.route.patch('/url').route['urls'] == ('/url', )
 
     def test_options(self):
         """Test to ensure the HTTP METHOD can be set to just OPTIONS on the fly"""
         assert self.route.options().route['accept'] == ('OPTIONS', )
-        assert self.route.options('url').route['urls'] == ('url', )
+        assert self.route.options('/url').route['urls'] == ('/url', )
 
     def test_head(self):
         """Test to ensure the HTTP METHOD can be set to just HEAD on the fly"""
         assert self.route.head().route['accept'] == ('HEAD', )
-        assert self.route.head('url').route['urls'] == ('url', )
+        assert self.route.head('/url').route['urls'] == ('/url', )
 
     def test_connect(self):
         """Test to ensure the HTTP METHOD can be set to just CONNECT on the fly"""
         assert self.route.connect().route['accept'] == ('CONNECT', )
-        assert self.route.connect('url').route['urls'] == ('url', )
+        assert self.route.connect('/url').route['urls'] == ('/url', )
 
     def test_call(self):
         """Test to ensure the HTTP METHOD can be set to accept all on the fly"""

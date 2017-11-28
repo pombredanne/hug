@@ -26,10 +26,10 @@ from decimal import Decimal
 from uuid import UUID
 
 import pytest
+from marshmallow import Schema, fields
 
 import hug
 from hug.exceptions import InvalidTypeData
-from marshmallow import Schema, fields
 
 
 def test_type():
@@ -88,6 +88,7 @@ def test_multiple():
 def test_delimited_list():
     """Test to ensure hug's custom delimited list type function works as expected"""
     assert hug.types.delimited_list(',')('value1,value2') == ['value1', 'value2']
+    assert hug.types.DelimitedList[int](',')('1,2') == [1, 2]
     assert hug.types.delimited_list(',')(['value1', 'value2']) == ['value1', 'value2']
     assert hug.types.delimited_list('|-|')('value1|-|value2|-|value3,value4') == ['value1', 'value2', 'value3,value4']
     assert ',' in hug.types.delimited_list(',').__doc__
@@ -232,10 +233,20 @@ def test_cut_off():
 
 def test_inline_dictionary():
     """Tests that inline dictionary values are correctly handled"""
+    int_dict = hug.types.InlineDictionary[int, int]()
+    assert int_dict('1:2') == {1: 2}
+    assert int_dict('1:2|3:4') == {1: 2, 3: 4}
     assert hug.types.inline_dictionary('1:2') == {'1': '2'}
     assert hug.types.inline_dictionary('1:2|3:4') == {'1': '2', '3': '4'}
     with pytest.raises(ValueError):
         hug.types.inline_dictionary('1')
+
+    int_dict = hug.types.InlineDictionary[int]()
+    assert int_dict('1:2') == {1: '2'}
+
+    int_dict = hug.types.InlineDictionary[int, int, int]()
+    assert int_dict('1:2') == {1: 2}
+
 
 
 def test_one_of():
@@ -367,14 +378,13 @@ def test_create_type():
             raise ArithmeticError('Testing different error types')
         return 'hi-' + value
 
-    my_type = prefixed_string()
-    assert my_type('there') == 'hi-there'
+    assert prefixed_string('there') == 'hi-there'
     with pytest.raises(ValueError):
-        my_type([])
+        prefixed_string([])
     with pytest.raises(ValueError):
-        my_type('hi')
+        prefixed_string('hi')
     with pytest.raises(ValueError):
-        my_type('bye')
+        prefixed_string('bye')
 
     @hug.type(extend=hug.types.text, exception_handlers={TypeError: ValueError})
     def prefixed_string(value):
@@ -382,13 +392,17 @@ def test_create_type():
             raise ArithmeticError('Testing different error types')
         return 'hi-' + value
 
-    my_type = prefixed_string()
     with pytest.raises(ArithmeticError):
-        my_type('1+1')
+        prefixed_string('1+1')
 
     @hug.type(extend=hug.types.text)
     def prefixed_string(value):
         return 'hi-' + value
 
-    my_type = prefixed_string()
-    assert my_type('there') == 'hi-there'
+    assert prefixed_string('there') == 'hi-there'
+
+    @hug.type(extend=hug.types.one_of)
+    def numbered(value):
+        return int(value)
+
+    assert numbered(['1', '2', '3'])('1') == 1

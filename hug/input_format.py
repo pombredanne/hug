@@ -21,14 +21,13 @@ OTHER DEALINGS IN THE SOFTWARE.
 """
 from __future__ import absolute_import
 
-import json as json_converter
 import re
 from cgi import parse_multipart
 from urllib.parse import parse_qs as urlencoded_converter
 
 from falcon.util.uri import parse_query_string
-
 from hug.format import content_type, underscore
+from hug.json_module import json as json_converter
 
 
 @content_type('text/plain')
@@ -74,7 +73,7 @@ def multipart(body, **header_params):
     if header_params and 'boundary' in header_params:
         if type(header_params['boundary']) is str:
             header_params['boundary'] = header_params['boundary'].encode()
-    form = parse_multipart(body, header_params)
+    form = parse_multipart((body.stream if hasattr(body, 'stream') else body), header_params)
     for key, value in form.items():
         if type(value) is list and len(value) is 1:
             form[key] = value[0]

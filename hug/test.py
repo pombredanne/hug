@@ -21,7 +21,6 @@ OTHER DEALINGS IN THE SOFTWARE.
 """
 from __future__ import absolute_import
 
-import json
 import sys
 from functools import partial
 from io import BytesIO
@@ -30,12 +29,12 @@ from urllib.parse import urlencode
 
 from falcon import HTTP_METHODS
 from falcon.testing import StartResponseMock, create_environ
-
 from hug import output_format
 from hug.api import API
+from hug.json_module import json
 
 
-def call(method, api_or_module, url, body='', headers=None, **params):
+def call(method, api_or_module, url, body='', headers=None, params=None, query_string='', scheme='http', **kwargs):
     """Simulates a round-trip call against the given API / URL"""
     api = API(api_or_module).http.server()
     response = StartResponseMock()
@@ -44,18 +43,25 @@ def call(method, api_or_module, url, body='', headers=None, **params):
         body = output_format.json(body)
         headers.setdefault('content-type', 'application/json')
 
-    result = api(create_environ(path=url, method=method, headers=headers, query_string=urlencode(params, True),
-                                body=body),
-                 response)
+    params = params if params else {}
+    params.update(kwargs)
+    if params:
+        query_string = '{}{}{}'.format(query_string, '&' if query_string else '', urlencode(params, True))
+    result = api(create_environ(path=url, method=method, headers=headers, query_string=query_string,
+                                body=body, scheme=scheme), response)
     if result:
         try:
             response.data = result[0].decode('utf8')
         except TypeError:
-            response.data = []
+            data = BytesIO()
             for chunk in result:
-                response.data.append(chunk.decode('utf8'))
-            response.data = "".join(response.data)
-        except UnicodeDecodeError:
+                data.write(chunk)
+            data = data.getvalue()
+            try:
+                response.data = data.decode('utf8')
+            except UnicodeDecodeError:   # pragma: no cover
+                response.data = data
+        except (UnicodeDecodeError, AttributeError):
             response.data = result[0]
         response.content_type = response.headers_dict['content-type']
         if response.content_type == 'application/json':
@@ -70,11 +76,11 @@ for method in HTTP_METHODS:
     globals()[method.lower()] = tester
 
 
-def cli(method, *kargs, **arguments):
+def cli(method, *args, **arguments):
     """Simulates testing a hug cli method from the command line"""
     collect_output = arguments.pop('collect_output', True)
 
-    command_args = [method.__name__] + list(kargs)
+    command_args = [method.__name__] + list(args)
     for name, values in arguments.items():
         if not isinstance(values, (tuple, list)):
             values = (values, )

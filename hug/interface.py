@@ -35,57 +35,45 @@ import hug.api
 import hug.output_format
 import hug.types as types
 from hug import introspect
+from hug._async import asyncio_call
 from hug.exceptions import InvalidTypeData
 from hug.format import parse_content_type
 from hug.types import MarshmallowSchema, Multiple, OneOf, SmartBoolean, Text, text
-
-try:
-    import asyncio
-
-    if sys.version_info >= (3, 4, 4):
-        ensure_future = asyncio.ensure_future  # pragma: no cover
-    else:
-        ensure_future = asyncio.async  # pragma: no cover
-
-    def asyncio_call(function, *args, **kwargs):
-        loop = asyncio.get_event_loop()
-        function = ensure_future(function(*args, **kwargs), loop=loop)
-        loop.run_until_complete(function)
-        return function.result()
-
-except ImportError:  # pragma: no cover
-
-    def asyncio_call(*args, **kwargs):
-        raise NotImplementedError()
 
 
 class Interfaces(object):
     """Defines the per-function singleton applied to hugged functions defining common data needed by all interfaces"""
 
     def __init__(self, function):
+        self.api = hug.api.from_object(function)
         self.spec = getattr(function, 'original', function)
         self.arguments = introspect.arguments(function)
+        self.name = introspect.name(function)
         self._function = function
 
         self.is_coroutine = introspect.is_coroutine(self.spec)
         if self.is_coroutine:
             self.spec = getattr(self.spec, '__wrapped__', self.spec)
 
-        self.takes_kargs = introspect.takes_kargs(self.spec)
+        self.takes_args = introspect.takes_args(self.spec)
         self.takes_kwargs = introspect.takes_kwargs(self.spec)
 
-        self.parameters = introspect.arguments(self.spec, 1 if self.takes_kargs else 0)
-        if self.takes_kargs:
-            self.karg = self.parameters[-1]
-
-        self.defaults = {}
-        for index, default in enumerate(reversed(self.spec.__defaults__ or ())):
-            self.defaults[self.parameters[-(index + 1)]] = default
-
+        self.parameters = list(introspect.arguments(self.spec, self.takes_kwargs + self.takes_args))
+        if self.takes_kwargs:
+            self.kwarg = self.parameters.pop(-1)
+        if self.takes_args:
+            self.arg = self.parameters.pop(-1)
+        self.parameters = tuple(self.parameters)
+        self.defaults = dict(zip(reversed(self.parameters), reversed(self.spec.__defaults__ or ())))
         self.required = self.parameters[:-(len(self.spec.__defaults__ or ())) or None]
-        if introspect.is_method(self.spec) or introspect.is_method(function):
+        self.is_method = introspect.is_method(self.spec) or introspect.is_method(function)
+        if self.is_method:
             self.required = self.required[1:]
             self.parameters = self.parameters[1:]
+
+        self.all_parameters = set(self.parameters)
+        if self.spec is not function:
+            self.all_parameters.update(self.arguments)
 
         self.transform = self.spec.__annotations__.get('return', None)
         self.directives = {}
@@ -97,7 +85,9 @@ class Interfaces(object):
                 self.directives[name] = transformer
                 continue
 
-            if hasattr(transformer, 'load'):
+            if hasattr(transformer, 'from_string'):
+                transformer = transformer.from_string
+            elif hasattr(transformer, 'load'):
                 transformer = MarshmallowSchema(transformer)
             elif hasattr(transformer, 'deserialize'):
                 transformer = transformer.deserialize
@@ -118,12 +108,13 @@ class Interface(object):
 
        A Interface object should be created for every kind of protocal hug supports
     """
-    __slots__ = ('interface', 'api', 'defaults', 'parameters', 'required', 'outputs', 'on_invalid', 'requires',
-                 'validate_function', 'transform', 'examples', 'output_doc', 'wrapped', 'directives',
-                 'raise_on_invalid', 'invalid_outputs')
+    __slots__ = ('interface', '_api', 'defaults', 'parameters', 'required', '_outputs', 'on_invalid', 'requires',
+                 'validate_function', 'transform', 'examples', 'output_doc', 'wrapped', 'directives', 'all_parameters',
+                 'raise_on_invalid', 'invalid_outputs', 'map_params', 'input_transformations')
 
     def __init__(self, route, function):
-        self.api = route.get('api', hug.api.from_object(function))
+        if route.get('api', None):
+            self._api = route['api']
         if 'examples' in route:
             self.examples = route['examples']
         if not hasattr(function, 'interface'):
@@ -139,13 +130,37 @@ class Interface(object):
         if not 'parameters' in route:
             self.defaults = self.interface.defaults
             self.parameters = self.interface.parameters
+            self.all_parameters = self.interface.all_parameters
             self.required = self.interface.required
         else:
             self.defaults = route.get('defaults', {})
             self.parameters = tuple(route['parameters'])
+            self.all_parameters = set(route['parameters'])
             self.required = tuple([parameter for parameter in self.parameters if parameter not in self.defaults])
 
-        self.outputs = route.get('output', None)
+        if 'map_params' in route:
+            self.map_params = route['map_params']
+            for interface_name, internal_name in self.map_params.items():
+                if internal_name in self.defaults:
+                    self.defaults[interface_name] = self.defaults.pop(internal_name)
+                if internal_name in self.parameters:
+                    self.parameters = [interface_name if param == internal_name else param for param in self.parameters]
+                if internal_name in self.all_parameters:
+                    self.all_parameters.remove(internal_name)
+                    self.all_parameters.add(interface_name)
+                if internal_name in self.required:
+                    self.required = tuple([interface_name if param == internal_name else param for
+                                           param in self.required])
+
+            reverse_mapping = {internal: interface for interface, internal in self.map_params.items()}
+            self.input_transformations = {reverse_mapping.get(name, name): transform for
+                                          name, transform in self.interface.input_transformations.items()}
+        else:
+            self.input_transformations = self.interface.input_transformations
+
+        if 'output' in route:
+            self.outputs = route['output']
+
         self.transform = route.get('transform', None)
         if self.transform is None and not isinstance(self.interface.transform, (str, type(None))):
             self.transform = self.interface.transform
@@ -168,10 +183,22 @@ class Interface(object):
         self.directives = {directive_name: defined_directives[directive_name] for directive_name in used_directives}
         self.directives.update(self.interface.directives)
 
+    @property
+    def api(self):
+        return getattr(self, '_api', self.interface.api)
+
+    @property
+    def outputs(self):
+        return getattr(self, '_outputs', None)
+
+    @outputs.setter
+    def outputs(self, outputs):
+        self._outputs = outputs  # pragma: no cover - generally re-implemented by sub classes
+
     def validate(self, input_parameters):
         """Runs all set type transformers / validators against the provided input parameters and returns any errors"""
         errors = {}
-        for key, type_handler in self.interface.input_transformations.items():
+        for key, type_handler in self.input_transformations.items():
             if self.raise_on_invalid:
                 if key in input_parameters:
                     input_parameters[key] = type_handler(input_parameters[key])
@@ -187,7 +214,7 @@ class Interface(object):
                     else:
                         errors[key] = str(error)
 
-        for require in self.interface.required:
+        for require in self.required:
             if not require in input_parameters:
                 errors[require] = "Required parameter '{}' not supplied".format(require)
         if not errors and getattr(self, 'validate_function', False):
@@ -219,6 +246,7 @@ class Interface(object):
         doc['outputs']['format'] = self.outputs.__doc__
         doc['outputs']['content_type'] = self.outputs.content_type
         parameters = [param for param in self.parameters if not param in ('request', 'response', 'self')
+                                                        and not param in ('api_version', 'body')
                                                         and not param.startswith('hug_')
                                                         and not hasattr(param, 'directive')]
         if parameters:
@@ -237,6 +265,10 @@ class Interface(object):
 
         return doc
 
+    def _rewrite_params(self, params):
+        for interface_name, internal_name in self.map_params.items():
+            if interface_name in params:
+                params[internal_name] = params.pop(interface_name)
 
 class Local(Interface):
     """Defines the Interface responsible for exposing functions locally"""
@@ -291,6 +323,8 @@ class Local(Interface):
                 outputs = getattr(self, 'invalid_outputs', self.outputs)
                 return outputs(errors) if outputs else errors
 
+        if getattr(self, 'map_params', None):
+            self._rewrite_params(kwargs)
         result = self.interface(**kwargs)
         if self.transform:
             result = self.transform(result)
@@ -303,10 +337,14 @@ class CLI(Interface):
     def __init__(self, route, function):
         super().__init__(route, function)
         self.interface.cli = self
-        self.outputs = route.get('output', hug.output_format.text)
+        self.reaffirm_types = {}
+        use_parameters = list(self.interface.parameters)
+        self.additional_options = getattr(self.interface, 'arg', getattr(self.interface, 'kwarg', False))
+        if self.additional_options:
+            use_parameters.append(self.additional_options)
 
         used_options = {'h', 'help'}
-        nargs_set = self.interface.takes_kargs
+        nargs_set = self.interface.takes_args or self.interface.takes_kwargs
         self.parser = argparse.ArgumentParser(description=route.get('doc', self.interface.spec.__doc__))
         if 'version' in route:
             self.parser.add_argument('-v', '--version', action='version',
@@ -314,11 +352,11 @@ class CLI(Interface):
                                                          route['version']))
             used_options.update(('v', 'version'))
 
-        for option in self.interface.parameters:
+        for option in use_parameters:
             if option in self.directives:
                 continue
 
-            if option in self.interface.required:
+            if option in self.interface.required or option == self.additional_options:
                 args = (option, )
             else:
                 short_option = option[0]
@@ -342,8 +380,10 @@ class CLI(Interface):
                 if transform in (list, tuple) or isinstance(transform, types.Multiple):
                     kwargs['action'] = 'append'
                     kwargs['type'] = Text()
+                    self.reaffirm_types[option] = transform
                 elif transform == bool or isinstance(transform, type(types.boolean)):
                     kwargs['action'] = 'store_true'
+                    self.reaffirm_types[option] = transform
                 elif isinstance(transform, types.OneOf):
                     kwargs['choices'] = transform.values
             elif (option in self.interface.spec.__annotations__ and
@@ -356,7 +396,7 @@ class CLI(Interface):
             elif kwargs.get('action', None) == 'store_true':
                 kwargs.pop('action', None) == 'store_true'
 
-            if option == getattr(self.interface, 'karg', None) or ():
+            if option == self.additional_options:
                 kwargs['nargs'] = '*'
             elif not nargs_set and kwargs.get('action', None) == 'append' and not option in self.interface.defaults:
                 kwargs['nargs'] = '*'
@@ -366,6 +406,14 @@ class CLI(Interface):
             self.parser.add_argument(*args, **kwargs)
 
         self.api.cli.commands[route.get('name', self.interface.spec.__name__)] = self
+
+    @property
+    def outputs(self):
+        return getattr(self, '_outputs', hug.output_format.text)
+
+    @outputs.setter
+    def outputs(self, outputs):
+        self._outputs = outputs
 
     def output(self, data):
         """Outputs the provided data using the transformations and output format specified for this CLI endpoint"""
@@ -383,25 +431,57 @@ class CLI(Interface):
 
     def __call__(self):
         """Calls the wrapped function through the lens of a CLI ran command"""
+        self.api._ensure_started()
         for requirement in self.requires:
             conclusion = requirement(request=sys.argv, module=self.api.module)
             if conclusion and conclusion is not True:
                 return self.output(conclusion)
 
-        pass_to_function = vars(self.parser.parse_known_args()[0])
+        if self.interface.is_method:
+            self.parser.prog = "%s %s" % (self.api.module.__name__, self.interface.name)
+
+        known, unknown = self.parser.parse_known_args()
+        pass_to_function = vars(known)
         for option, directive in self.directives.items():
             arguments = (self.defaults[option], ) if option in self.defaults else ()
             pass_to_function[option] = directive(*arguments, api=self.api, argparse=self.parser,
                                                  interface=self)
+        for field, type_handler in self.reaffirm_types.items():
+            if field in pass_to_function:
+                pass_to_function[field] = type_handler(pass_to_function[field])
 
         if getattr(self, 'validate_function', False):
             errors = self.validate_function(pass_to_function)
             if errors:
                 return self.output(errors)
 
-        if hasattr(self.interface, 'karg'):
-            karg_values = pass_to_function.pop(self.interface.karg, ())
-            result = self.interface(*karg_values, **pass_to_function)
+        args = None
+        if self.additional_options:
+            args = []
+            for parameter in self.interface.parameters:
+                if parameter in pass_to_function:
+                    args.append(pass_to_function.pop(parameter))
+            args.extend(pass_to_function.pop(self.additional_options, ()))
+            if self.interface.takes_kwargs:
+                add_options_to = None
+                for index, option in enumerate(unknown):
+                    if option.startswith('--'):
+                        if add_options_to:
+                            value = pass_to_function[add_options_to]
+                            if len(value) == 1:
+                                pass_to_function[add_options_to] = value[0]
+                            elif value == []:
+                                pass_to_function[add_options_to] = True
+                        add_options_to = option[2:]
+                        pass_to_function.setdefault(add_options_to, [])
+                    elif add_options_to:
+                        pass_to_function[add_options_to].append(option)
+
+        if getattr(self, 'map_params', None):
+            self._rewrite_params(pass_to_function)
+
+        if args:
+            result = self.interface(*args, **pass_to_function)
         else:
             result = self.interface(**pass_to_function)
 
@@ -410,9 +490,9 @@ class CLI(Interface):
 
 class HTTP(Interface):
     """Defines the interface responsible for wrapping functions and exposing them via HTTP based on the route"""
-    __slots__ = ('_params_for_outputs', '_params_for_invalid_outputs', '_params_for_transform', 'on_invalid',
+    __slots__ = ('_params_for_outputs_state', '_params_for_invalid_outputs_state', '_params_for_transform_state',
                  '_params_for_on_invalid', 'set_status', 'response_headers', 'transform', 'input_transformations',
-                 'examples', 'wrapped', 'catch_exceptions', 'parse_body')
+                 'examples', 'wrapped', 'catch_exceptions', 'parse_body', 'private', 'on_invalid', 'inputs')
     AUTO_INCLUDE = {'request', 'response'}
 
     def __init__(self, route, function, catch_exceptions=True):
@@ -421,45 +501,59 @@ class HTTP(Interface):
         self.parse_body = 'parse_body' in route
         self.set_status = route.get('status', False)
         self.response_headers = tuple(route.get('response_headers', {}).items())
-        self.outputs = route.get('output', self.api.http.output_format)
-
-        self._params_for_outputs = introspect.takes_arguments(self.outputs, *self.AUTO_INCLUDE)
-        self._params_for_transform = introspect.takes_arguments(self.transform, *self.AUTO_INCLUDE)
-
-        if 'output_invalid' in route:
-            self._params_for_invalid_outputs = introspect.takes_arguments(self.invalid_outputs, *self.AUTO_INCLUDE)
+        self.private = 'private' in route
+        self.inputs = route.get('inputs', {})
 
         if 'on_invalid' in route:
             self._params_for_on_invalid = introspect.takes_arguments(self.on_invalid, *self.AUTO_INCLUDE)
         elif self.transform:
             self._params_for_on_invalid = self._params_for_transform
 
-        if route['versions']:
-            self.api.http.versions.update(route['versions'])
+        self.api.http.versions.update(route.get('versions', (None, )))
 
         self.interface.http = self
+
+    @property
+    def _params_for_outputs(self):
+        if not hasattr(self, '_params_for_outputs_state'):
+            self._params_for_outputs_state = introspect.takes_arguments(self.outputs, *self.AUTO_INCLUDE)
+        return self._params_for_outputs_state
+
+    @property
+    def _params_for_invalid_outputs(self):
+        if not hasattr(self, '_params_for_invalid_outputs_state'):
+            self._params_for_invalid_outputs_state = introspect.takes_arguments(self.invalid_outputs,
+                                                                                *self.AUTO_INCLUDE)
+        return self._params_for_invalid_outputs_state
+
+    @property
+    def _params_for_transform(self):
+        if not hasattr(self, '_params_for_transform_state'):
+            self._params_for_transform_state = introspect.takes_arguments(self.transform, *self.AUTO_INCLUDE)
+        return self._params_for_transform_state
 
     def gather_parameters(self, request, response, api_version=None, **input_parameters):
         """Gathers and returns all parameters that will be used for this endpoint"""
         input_parameters.update(request.params)
-        if self.parse_body and request.content_length is not None:
+
+        if self.parse_body and request.content_length:
             body = request.stream
             content_type, content_params = parse_content_type(request.content_type)
-            body_formatter = body and self.api.http.input_format(content_type)
+            body_formatter = body and self.inputs.get(content_type, self.api.http.input_format(content_type))
             if body_formatter:
                 body = body_formatter(body, **content_params)
-            if 'body' in self.parameters:
+            if 'body' in self.all_parameters:
                 input_parameters['body'] = body
             if isinstance(body, dict):
                 input_parameters.update(body)
-        elif 'body' in self.parameters:
+        elif 'body' in self.all_parameters:
             input_parameters['body'] = None
 
-        if 'request' in self.parameters:
+        if 'request' in self.all_parameters:
             input_parameters['request'] = request
-        if 'response' in self.parameters:
+        if 'response' in self.all_parameters:
             input_parameters['response'] = response
-        if 'api_version' in self.parameters:
+        if 'api_version' in self.all_parameters:
             input_parameters['api_version'] = api_version
         for parameter, directive in self.directives.items():
             arguments = (self.defaults[parameter], ) if parameter in self.defaults else ()
@@ -467,6 +561,14 @@ class HTTP(Interface):
                                                     api=self.api, api_version=api_version, interface=self)
 
         return input_parameters
+
+    @property
+    def outputs(self):
+        return getattr(self, '_outputs', self.api.http.output_format)
+
+    @outputs.setter
+    def outputs(self, outputs):
+        self._outputs = outputs
 
     def transform_data(self, data, request=None, response=None):
         """Runs the transforms specified on this endpoint with the provided data, returning the data modified"""
@@ -523,9 +625,11 @@ class HTTP(Interface):
         else:
             response.data = self.outputs(data, **self._arguments(self._params_for_outputs, request, response))
 
-    def call_function(self, **parameters):
+    def call_function(self, parameters):
         if not self.interface.takes_kwargs:
-            parameters = {key: value for key, value in parameters.items() if key in self.parameters}
+            parameters = {key: value for key, value in parameters.items() if key in self.all_parameters}
+        if getattr(self, 'map_params', None):
+            self._rewrite_params(parameters)
 
         return self.interface(**parameters)
 
@@ -563,7 +667,10 @@ class HTTP(Interface):
 
     def __call__(self, request, response, api_version=None, **kwargs):
         """Call the wrapped function over HTTP pulling information as needed"""
-        api_version = int(api_version) if api_version is not None else api_version
+        if isinstance(api_version, str) and api_version.isdigit():
+            api_version = int(api_version)
+        else:
+            api_version = None
         if not self.catch_exceptions:
             exception_types = ()
         else:
@@ -583,21 +690,28 @@ class HTTP(Interface):
             if errors:
                 return self.render_errors(errors, request, response)
 
-            self.render_content(self.call_function(**input_parameters), request, response, **kwargs)
+            self.render_content(self.call_function(input_parameters), request, response, **kwargs)
         except falcon.HTTPNotFound:
             return self.api.http.not_found(request, response, **kwargs)
         except exception_types as exception:
             handler = None
-            if type(exception) in exception_types:
-                handler = self.api.http.exception_handlers(api_version)[type(exception)]
+            exception_type = type(exception)
+            if exception_type in exception_types:
+                handler = self.api.http.exception_handlers(api_version)[exception_type][0]
             else:
-                for exception_type, exception_handler in \
+                for match_exception_type, exception_handlers in \
                   tuple(self.api.http.exception_handlers(api_version).items())[::-1]:
-                    if isinstance(exception, exception_type):
-                        handler = exception_handler
+                    if isinstance(exception, match_exception_type):
+                        for potential_handler in exception_handlers:
+                             if not isinstance(exception, potential_handler.exclude):
+                                handler = potential_handler
+
+            if not handler:
+                raise exception
+
             handler(request=request, response=response, exception=exception, **kwargs)
 
-    def documentation(self, add_to=None, version=None, base_url="", url=""):
+    def documentation(self, add_to=None, version=None, prefix="", base_url="", url=""):
         """Returns the documentation specific to an HTTP interface"""
         doc = OrderedDict() if add_to is None else add_to
 
@@ -606,7 +720,7 @@ class HTTP(Interface):
             doc['usage'] = usage
 
         for example in self.examples:
-            example_text = "{0}{1}{2}".format(base_url, '/v{0}'.format(version) if version else '', url)
+            example_text = "{0}{1}{2}{3}".format(prefix, base_url, '/v{0}'.format(version) if version else '', url)
             if isinstance(example, str):
                 example_text += "?{0}".format(example)
             doc_examples = doc.setdefault('examples', [])
@@ -624,12 +738,13 @@ class HTTP(Interface):
     def urls(self, version=None):
         """Returns all URLS that are mapped to this interface"""
         urls = []
-        for url, methods in self.api.http.routes.items():
-            for method, versions in methods.items():
-                for interface_version, interface in versions.items():
-                    if interface_version == version and interface == self:
-                        if not url in urls:
-                            urls.append(('/v{0}'.format(version) if version else '') + url)
+        for base_url, routes in self.api.http.routes.items():
+            for url, methods in routes.items():
+                for method, versions in methods.items():
+                    for interface_version, interface in versions.items():
+                        if interface_version == version and interface == self:
+                            if not url in urls:
+                                urls.append(('/v{0}'.format(version) if version else '') + url)
         return urls
 
     def url(self, version=None, **kwargs):
@@ -641,3 +756,13 @@ class HTTP(Interface):
             return url.format(**kwargs)
 
         raise KeyError('URL that takes all provided parameters not found')
+
+
+class ExceptionRaised(HTTP):
+    """Defines the interface responsible for taking and transforming exceptions that occur during processing"""
+    __slots__ = ('handle', 'exclude')
+
+    def __init__(self, route, *args, **kwargs):
+        self.handle = route['exceptions']
+        self.exclude = route['exclude']
+        super().__init__(route, *args, **kwargs)

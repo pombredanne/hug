@@ -24,7 +24,9 @@ from __future__ import absolute_import
 
 import os
 import re
+from collections import OrderedDict
 from functools import wraps
+from urllib.parse import urljoin
 
 import falcon
 from falcon import HTTP_METHODS
@@ -40,7 +42,7 @@ class Router(object):
     """The base chainable router object"""
     __slots__ = ('route', )
 
-    def __init__(self, transform=None, output=None, validate=None, api=None, requires=(), **kwargs):
+    def __init__(self, transform=None, output=None, validate=None, api=None, requires=(), map_params=None, **kwargs):
         self.route = {}
         if transform is not None:
             self.route['transform'] = transform
@@ -52,6 +54,8 @@ class Router(object):
             self.route['api'] = api
         if requires:
             self.route['requires'] = (requires, ) if not isinstance(requires, (tuple, list)) else requires
+        if map_params:
+            self.route['map_params'] = map_params
 
     def output(self, formatter, **overrides):
         """Sets the output formatter that should be used to render this route"""
@@ -79,6 +83,10 @@ class Router(object):
         """Removes individual requirements while keeping all other defined ones within a route"""
         return self.where(requires=tuple(set(self.route.get('requires', ())).difference(requirements if
                                                             type(requirements) in (list, tuple) else (requirements, ))))
+
+    def map_params(self, **map_params):
+        """Map interface specific params to an internal name representation"""
+        return self.where(map_params=map_params)
 
     def where(self, **overrides):
         """Creates a new route, based on the current route, with the specified overrided values"""
@@ -182,10 +190,12 @@ class HTTPRouter(InternalValidation):
     """The HTTPRouter provides the base concept of a router from an HTTPRequest to a Python function"""
     __slots__ = ()
 
-    def __init__(self, versions=None, parse_body=False, parameters=None, defaults={}, status=None,
-                 response_headers=None, **kwargs):
+    def __init__(self, versions=any, parse_body=False, parameters=None, defaults={}, status=None,
+                 response_headers=None, private=False, inputs=None, **kwargs):
         super().__init__(**kwargs)
-        self.route['versions'] = (versions, ) if isinstance(versions, (int, float, None.__class__)) else versions
+        if versions is not any:
+            self.route['versions'] = (versions, ) if isinstance(versions, (int, float, None.__class__)) else versions
+            self.route['versions'] = tuple(int(version) if version else version for version in self.route['versions'])
         if parse_body:
             self.route['parse_body'] = parse_body
         if parameters:
@@ -196,6 +206,10 @@ class HTTPRouter(InternalValidation):
             self.route['status'] = status
         if response_headers:
             self.route['response_headers'] = response_headers
+        if private:
+            self.route['private'] = private
+        if inputs:
+            self.route['inputs'] = inputs
 
     def versions(self, supported, **overrides):
         """Sets the versions that this route should be compatiable with"""
@@ -239,25 +253,41 @@ class HTTPRouter(InternalValidation):
                  no_store and 'no-store', must_revalidate and 'must-revalidate')
         return self.add_response_headers({'cache-control': ', '.join(filter(bool, parts))}, **overrides)
 
-    def allow_origins(self, *origins, methods=None, **overrides):
+    def allow_origins(self, *origins, methods=None, max_age=None, credentials=None, headers=None, **overrides):
         """Convience method for quickly allowing other resources to access this one"""
-        headers = {'Access-Control-Allow-Origin': ', '.join(origins) if origins else '*'}
+        response_headers = {}
+        if origins:
+            @hug.response_middleware()
+            def process_data(request, response, resource):
+                if 'ORIGIN' in request.headers:
+                    origin = request.headers['ORIGIN']
+                    if origin in origins:
+                        response.set_header('Access-Control-Allow-Origin', origin)
+        else:
+            response_headers['Access-Control-Allow-Origin'] = '*'
+
         if methods:
-            headers['Access-Control-Allow-Methods'] = ', '.join(methods)
-        return self.add_response_headers(headers, **overrides)
+            response_headers['Access-Control-Allow-Methods'] = ', '.join(methods)
+        if max_age:
+            response_headers['Access-Control-Max-Age'] = max_age
+        if credentials:
+            response_headers['Access-Control-Allow-Credentials'] = str(credentials).lower()
+        if headers:
+            response_headers['Access-Control-Allow-Headers'] = headers
+        return self.add_response_headers(response_headers, **overrides)
 
 
 class NotFoundRouter(HTTPRouter):
     """Provides a chainable router that can be used to route 404'd request to a Python function"""
     __slots__ = ()
 
-    def __init__(self, output=None, versions=None, status=falcon.HTTP_NOT_FOUND, **kwargs):
+    def __init__(self, output=None, versions=any, status=falcon.HTTP_NOT_FOUND, **kwargs):
         super().__init__(output=output, versions=versions, status=status, **kwargs)
 
     def __call__(self, api_function):
         api = self.route.get('api', hug.api.from_object(api_function))
         (interface, callable_method) = self._create_interface(api, api_function)
-        for version in self.route['versions']:
+        for version in self.route.get('versions', (None, )):
             api.http.set_not_found_handler(interface, version)
 
         return callable_method
@@ -281,7 +311,7 @@ class SinkRouter(HTTPRouter):
 
 
 class StaticRouter(SinkRouter):
-    """Provides a chainable router that can be used to return static files automtically from a set of directories"""
+    """Provides a chainable router that can be used to return static files automatically from a set of directories"""
     __slots__ = ('route', )
 
     def __init__(self, urls=None, output=hug.output_format.file, cache=False, **kwargs):
@@ -301,10 +331,12 @@ class StaticRouter(SinkRouter):
 
         api = self.route.get('api', hug.api.from_object(api_function))
         for base_url in self.route.get('urls', ("/{0}".format(api_function.__name__), )):
-            def read_file(request=None):
-                filename = request.path[len(base_url) + 1:]
+            def read_file(request=None, path=""):
+                filename = path.lstrip("/")
                 for directory in directories:
-                    path = os.path.join(directory, filename)
+                    path = os.path.abspath(os.path.join(directory, filename))
+                    if not path.startswith(directory):
+                        hug.redirect.not_found()
                     if os.path.isdir(path):
                         new_path = os.path.join(path, "index.html")
                         if os.path.exists(new_path) and os.path.isfile(new_path):
@@ -321,25 +353,30 @@ class ExceptionRouter(HTTPRouter):
     """Provides a chainable router that can be used to route exceptions thrown during request handling"""
     __slots__ = ()
 
-    def __init__(self, exceptions=(Exception, ), output=None, **kwargs):
+    def __init__(self, exceptions=(Exception, ), exclude=(), output=None, **kwargs):
         super().__init__(output=output, **kwargs)
         self.route['exceptions'] = (exceptions, ) if not isinstance(exceptions, (list, tuple)) else exceptions
+        self.route['exclude'] = (exclude, ) if not isinstance(exclude, (list, tuple)) else exclude
 
     def __call__(self, api_function):
         api = self.route.get('api', hug.api.from_object(api_function))
         (interface, callable_method) = self._create_interface(api, api_function, catch_exceptions=False)
-        for version in self.route['versions']:
+        for version in self.route.get('versions', (None, )):
             for exception in self.route['exceptions']:
                 api.http.add_exception_handler(exception, interface, version)
 
         return callable_method
+
+    def _create_interface(self, api, api_function, catch_exceptions=False):
+        interface = hug.interface.ExceptionRaised(self.route, api_function, catch_exceptions)
+        return (interface, api_function)
 
 
 class URLRouter(HTTPRouter):
     """Provides a chainable router that can be used to route a URL to a Python function"""
     __slots__ = ()
 
-    def __init__(self, urls=None, accept=HTTP_METHODS, output=None, examples=(), versions=None,
+    def __init__(self, urls=None, accept=HTTP_METHODS, output=None, examples=(), versions=any,
                  suffixes=(), prefixes=(), response_headers=None, parse_body=True, **kwargs):
         super().__init__(output=output, versions=versions, parse_body=parse_body, response_headers=response_headers,
                          **kwargs)
@@ -356,6 +393,7 @@ class URLRouter(HTTPRouter):
 
     def __call__(self, api_function):
         api = self.route.get('api', hug.api.from_object(api_function))
+        api.http.routes.setdefault(api.http.base_url, OrderedDict())
         (interface, callable_method) = self._create_interface(api, api_function)
 
         use_examples = self.route.get('examples', ())
@@ -372,10 +410,10 @@ class URLRouter(HTTPRouter):
             for prefix in self.route.get('prefixes', ()):
                 expose.append(prefix + base_url)
             for url in expose:
-                handlers = api.http.routes.setdefault(url, {})
+                handlers = api.http.routes[api.http.base_url].setdefault(url, {})
                 for method in self.route.get('accept', ()):
                     version_mapping = handlers.setdefault(method.upper(), {})
-                    for version in self.route['versions']:
+                    for version in self.route.get('versions', (None, )):
                         version_mapping[version] = interface
                         api.http.versioned.setdefault(version, {})[callable_method.__name__] = callable_method
 
@@ -471,3 +509,17 @@ class URLRouter(HTTPRouter):
     def prefixes(self, *prefixes, **overrides):
         """Sets the prefixes supported by the route"""
         return self.where(prefixes=prefixes, **overrides)
+
+    def where(self, **overrides):
+        if 'urls' in overrides:
+            existing_urls = self.route.get('urls', ())
+            use_urls = []
+            for url in (overrides['urls'], ) if isinstance(overrides['urls'], str) else overrides['urls']:
+                if url.startswith('/') or not existing_urls:
+                    use_urls.append(url)
+                else:
+                    for existing in existing_urls:
+                        use_urls.append(urljoin(existing.rstrip('/') + '/', url))
+            overrides['urls'] = tuple(use_urls)
+
+        return super().where(**overrides)

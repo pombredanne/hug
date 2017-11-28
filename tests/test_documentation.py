@@ -1,6 +1,6 @@
 """tests/test_documentation.py.
 
-Tests the documentation generation capibilities integrated into Hug
+Tests the documentation generation capabilities integrated into Hug
 
 Copyright (C) 2016 Timothy Edmund Crosley
 
@@ -56,32 +56,38 @@ def test_basic_documentation():
         """Annotations defined with strings should be documentation only"""
         pass
 
+    @hug.get(private=True)
+    def private():
+        """Hidden from documentation"""
+        pass
+
     documentation = api.http.documentation()
     assert 'test_documentation' in documentation['overview']
 
     assert '/hello_world' in documentation['handlers']
     assert '/echo' in documentation['handlers']
     assert '/happy_birthday' in documentation['handlers']
-    assert not '/birthday' in documentation['handlers']
+    assert '/birthday' not in documentation['handlers']
     assert '/noop' in documentation['handlers']
     assert '/string_docs' in documentation['handlers']
+    assert '/private' not in documentation['handlers']
 
     assert documentation['handlers']['/hello_world']['GET']['usage'] == "Returns hello world"
     assert documentation['handlers']['/hello_world']['GET']['examples'] == ["/hello_world"]
     assert documentation['handlers']['/hello_world']['GET']['outputs']['content_type'] == "application/json"
-    assert not 'inputs' in documentation['handlers']['/hello_world']['GET']
+    assert 'inputs' not in documentation['handlers']['/hello_world']['GET']
 
     assert 'text' in documentation['handlers']['/echo']['POST']['inputs']['text']['type']
-    assert not 'default' in documentation['handlers']['/echo']['POST']['inputs']['text']
+    assert 'default' not in documentation['handlers']['/echo']['POST']['inputs']['text']
 
     assert 'number' in documentation['handlers']['/happy_birthday']['POST']['inputs']['age']['type']
     assert documentation['handlers']['/happy_birthday']['POST']['inputs']['age']['default'] == 1
 
-    assert not 'inputs' in documentation['handlers']['/noop']['POST']
+    assert 'inputs' not in documentation['handlers']['/noop']['POST']
 
     assert documentation['handlers']['/string_docs']['GET']['inputs']['data']['type'] == 'Takes data'
     assert documentation['handlers']['/string_docs']['GET']['outputs']['type'] == 'Returns data'
-    assert not 'ignore_directive' in documentation['handlers']['/string_docs']['GET']['inputs']
+    assert 'ignore_directive' not in documentation['handlers']['/string_docs']['GET']['inputs']
 
     @hug.post(versions=1)  # noqa
     def echo(text):
@@ -102,9 +108,20 @@ def test_basic_documentation():
     def unversioned():
         return 'Hello'
 
+    @hug.get(versions=False)
+    def noversions():
+        pass
+
+    @hug.extend_api('/fake', base_url='/api')
+    def extend_with():
+        import tests.module_fake_simple
+        return (tests.module_fake_simple, )
+
     versioned_doc = api.http.documentation()
     assert 'versions' in versioned_doc
     assert 1 in versioned_doc['versions']
+    assert 2 in versioned_doc['versions']
+    assert False not in versioned_doc['versions']
     assert '/unversioned' in versioned_doc['handlers']
     assert '/echo' in versioned_doc['handlers']
     assert '/test' in versioned_doc['handlers']
@@ -115,6 +132,10 @@ def test_basic_documentation():
     assert '/unversioned' in specific_version_doc['handlers']
     assert specific_version_doc['handlers']['/unversioned']['GET']['requires'] == ['V1 Docs']
     assert '/test' not in specific_version_doc['handlers']
+
+    specific_base_doc = api.http.documentation(base_url='/api')
+    assert '/echo' not in specific_base_doc['handlers']
+    assert '/fake/made_up_hello' in specific_base_doc['handlers']
 
     handler = api.http.documentation_404()
     response = StartResponseMock()

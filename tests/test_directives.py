@@ -42,6 +42,8 @@ def test_timer():
     assert isinstance(timer.start, float)
     assert isinstance(float(timer), float)
     assert isinstance(int(timer), int)
+    assert isinstance(str(timer), str)
+    assert isinstance(repr(timer), str)
     assert float(timer) < timer.start
 
     @hug.get()
@@ -207,3 +209,14 @@ def test_user_directives():
 
     token = b'Basic ' + b64encode('{0}:{1}'.format('Tim', 'Custom password').encode('utf8'))
     assert hug.test.get(api, 'try_user', headers={'Authorization': token}).data == 'Tim'
+
+
+def test_directives(hug_api):
+    """Test to ensure cors directive works as expected"""
+    assert hug.directives.cors('google.com') == 'google.com'
+
+    @hug.get(api=hug_api)
+    def cors_supported(cors: hug.directives.cors="*"):
+        return True
+
+    assert hug.test.get(hug_api, 'cors_supported').headers_dict['Access-Control-Allow-Origin'] == '*'

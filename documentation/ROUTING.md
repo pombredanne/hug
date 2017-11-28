@@ -47,27 +47,27 @@ External API:
     # external.py
     import hug
 
-    import external
+    import internal
 
     router = hug.route.API(__name__)
-    router.get('/home')(external.root)
+    router.get('/home')(internal.root)
 
 Or, alternatively:
 
     # external.py
     import hug
 
-    import external
+    import internal
 
     api = hug.API(__name__)
-    hug.get('/home', api=api)(external.root)
+    hug.get('/home', api=api)(internal.root)
 
 Chaining routers for easy re-use
 ================================
 
-A very common scenerio when using hug routers, because they are so powerful, is duplication between routers.
+A very common scenario when using hug routers, because they are so powerful, is duplication between routers.
 For instance: if you decide you want every route to return the 404 page when a validation error occurs or you want to
-require validation for a collection of routes. hug makes this extreamly simple by allowing all routes to be chained
+require validation for a collection of routes. hug makes this extremely simple by allowing all routes to be chained
 and reused:
 
     import hug
@@ -92,24 +92,24 @@ shown in the math example above.
 Common router parameters
 ========================
 
-There are a few parameters that are shared between all router types, as they are globaly applicable to all currently supported interfaces:
+There are a few parameters that are shared between all router types, as they are globally applicable to all currently supported interfaces:
 
  - `api`: The API to register the route with. You can always retrieve the API singleton for the current module by doing `hug.API(__name__)`
- - `transform`: A fuction to call on the the data returned by the function to transform it in some way specific to this interface
+ - `transform`: A function to call on the the data returned by the function to transform it in some way specific to this interface
  - `output`: An output format to apply to the outputted data (after return and optional transformation)
  - `requires`: A list or single function that must all return `True` for the function to execute when called via this interface (commonly used for authentication)
 
 HTTP Routers
 ============
 
-in addition to `hug.http` hug includes convience decorators for all common HTTP METHODS (`hug.connect`, `hug.delete`, `hug.get`, `hug.head`, `hug.options`, `hug.patch`, `hug.post`, `hug.put`, `hug.get_post`, `hug.put_post`, and `hug.trace`). These methods are functionally the same as calling `@hug.http(accept=(METHOD, ))` and are otherwise identical to the http router.
+in addition to `hug.http` hug includes convenience decorators for all common HTTP METHODS (`hug.connect`, `hug.delete`, `hug.get`, `hug.head`, `hug.options`, `hug.patch`, `hug.post`, `hug.put`, `hug.get_post`, `hug.put_post`, and `hug.trace`). These methods are functionally the same as calling `@hug.http(accept=(METHOD, ))` and are otherwise identical to the http router.
 
- - `urls`: A list of or a single URL that should be routed to the function. Supports defining variables withing the URL that will automatically be passed to the function when `{}` notation is found in the URL: `/website/{page}`. Defaults to the name of the function being routed to.
+ - `urls`: A list of or a single URL that should be routed to the function. Supports defining variables within the URL that will automatically be passed to the function when `{}` notation is found in the URL: `/website/{page}`. Defaults to the name of the function being routed to.
  - `accept`: A list of or a single HTTP METHOD value to accept. Defaults to all common HTTP methods.
  - `examples`: A list of or a single example set of parameters in URL query param format. For example: `examples="argument_1=x&argument_2=y"`
  - `versions`: A list of or a single integer version of the API this endpoint supports. To support a range of versions the Python builtin range function can be used.
  - `suffixes`: A list of or a single suffix to add to the end of all URLs using this router.
- - `prefixes`: A list of or a single suffix to add to the end of all URLs using this router.
+ - `prefixes`: A list of or a single prefix to add before all URLs using this router.
  - `response_headers`: An optional dictionary of response headers to set automatically on every request to this endpoint.
   - `status`: An optional status code to automatically apply to the response on every request to this endpoint.
  - `parse_body`: If `True` and the format of the request body matches one known by hug, hug will run the specified input formatter on the request body before passing it as an argument to the routed function. Defaults to `True`.
@@ -138,6 +138,6 @@ By default all hug APIs are already valid local APIs. However, sometimes it can 
  - `version`: Specify a version of the API for local use. If versions are being used, this generally should be the latest supported.
  - `on_invalid`: A transformation function to run outputed data through, only if the request fails validation. Defaults to the endpoints specified general transform function, can be set to not run at all by setting to `None`.
  - `output_invalid`: Specifies an output format to attach to the endpoint only on the case that validation fails. Defaults to the endpoints specified output format.
- - `raise_on_invalid`: If set to `True`, instead of collecting validation errors in a dictionry, hug will simply raise them as they occur.
+ - `raise_on_invalid`: If set to `True`, instead of collecting validation errors in a dictionary, hug will simply raise them as they occur.
 
 NOTE: unlike all other routers, this modifies the function in-place

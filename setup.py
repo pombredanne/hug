@@ -80,7 +80,6 @@ if CYTHON:
         for ext in list_modules(path.join(MYDIR, 'hug'))]
     cmdclass['build_ext'] = build_ext
 
-
 try:
    import pypandoc
    readme = pypandoc.convert('README.md', 'rst')
@@ -88,7 +87,7 @@ except (IOError, ImportError, OSError, RuntimeError):
    readme = ''
 
 setup(name='hug',
-      version='2.1.2',
+      version='2.3.2',
       description='A Python framework that makes developing APIs as simple as possible, but no simpler.',
       long_description=readme,
       author='Timothy Crosley',
@@ -102,7 +101,7 @@ setup(name='hug',
       },
       packages=['hug'],
       requires=['falcon', 'requests'],
-      install_requires=['falcon==1.0.0', 'requests'],
+      install_requires=['falcon==1.3.0', 'requests'],
       cmdclass=cmdclass,
       ext_modules=ext_modules,
       keywords='Web, Python, Python3, Refactoring, REST, Framework, RPC',
@@ -117,6 +116,7 @@ setup(name='hug',
                    'Programming Language :: Python :: 3.3',
                    'Programming Language :: Python :: 3.4',
                    'Programming Language :: Python :: 3.5',
+                   'Programming Language :: Python :: 3.6',
                    'Topic :: Software Development :: Libraries',
                    'Topic :: Utilities'],
       **PyTest.extra_kwargs)

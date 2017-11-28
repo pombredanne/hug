@@ -55,6 +55,12 @@ class Timer(object):
     def __native_types__(self):
         return self.__float__()
 
+    def __str__(self):
+        return str(float(self))
+
+    def __repr__(self):
+        return "{}({})".format(self.__class__.__name__, self)
+
 
 @_built_in_directive
 def module(default=None, api=None, **kwargs):
@@ -92,6 +98,13 @@ def session(context_name='session', request=None, **kwargs):
 def user(default=None, request=None, **kwargs):
     """Returns the current logged in user"""
     return request and request.context.get('user', None) or default
+
+
+@_built_in_directive
+def cors(support='*', response=None, **kwargs):
+    """Adds the the Access-Control-Allow-Origin header to this endpoint, with the specified support"""
+    response and response.set_header('Access-Control-Allow-Origin', support)
+    return support
 
 
 @_built_in_directive

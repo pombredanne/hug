@@ -30,6 +30,7 @@ import requests
 from falcon.testing import StartResponseMock, create_environ
 
 import hug
+from hug._async import coroutine
 
 from .constants import BASE_DIRECTORY
 
@@ -54,18 +55,18 @@ def test_basic_call():
     assert hug.test.get(module, '/hello_world').data == "Hello World!"
 
 
-def test_basic_call_on_method():
+def test_basic_call_on_method(hug_api):
     """Test to ensure the most basic call still works if applied to a method"""
     class API(object):
 
-        @hug.call()
+        @hug.call(api=hug_api)
         def hello_world(self=None):
             return "Hello World!"
 
     api_instance = API()
     assert api_instance.hello_world.interface.http
     assert api_instance.hello_world() == 'Hello World!'
-    assert hug.test.get(api, '/hello_world').data == "Hello World!"
+    assert hug.test.get(hug_api, '/hello_world').data == "Hello World!"
 
     class API(object):
 
@@ -74,17 +75,17 @@ def test_basic_call_on_method():
 
     api_instance = API()
 
-    @hug.call()
+    @hug.call(api=hug_api)
     def hello_world():
         return api_instance.hello_world()
 
     assert api_instance.hello_world() == 'Hello World!'
-    assert hug.test.get(api, '/hello_world').data == "Hello World!"
+    assert hug.test.get(hug_api, '/hello_world').data == "Hello World!"
 
     class API(object):
 
         def __init__(self):
-            hug.call()(self.hello_world_method)
+            hug.call(api=hug_api)(self.hello_world_method)
 
         def hello_world_method(self):
             return "Hello World!"
@@ -92,12 +93,12 @@ def test_basic_call_on_method():
     api_instance = API()
 
     assert api_instance.hello_world_method() == 'Hello World!'
-    assert hug.test.get(api, '/hello_world_method').data == "Hello World!"
+    assert hug.test.get(hug_api, '/hello_world_method').data == "Hello World!"
 
 
-def test_single_parameter():
+def test_single_parameter(hug_api):
     """Test that an api with a single parameter interacts as desired"""
-    @hug.call()
+    @hug.call(api=hug_api)
     def echo(text):
         return text
 
@@ -106,8 +107,8 @@ def test_single_parameter():
     with pytest.raises(TypeError):
         echo()
 
-    assert hug.test.get(api, 'echo', text="Hello").data == "Hello"
-    assert 'required' in hug.test.get(api, '/echo').data['errors']['text'].lower()
+    assert hug.test.get(hug_api, 'echo', text="Hello").data == "Hello"
+    assert 'required' in hug.test.get(hug_api, '/echo').data['errors']['text'].lower()
 
 
 def test_on_invalid_transformer():
@@ -326,6 +327,17 @@ def test_not_found():
     assert result.data == "Not Found"
     assert result.status == falcon.HTTP_NOT_FOUND
 
+    del api.http._not_found_handlers
+
+
+def test_not_found_with_extended_api():
+    """Test to ensure the not_found decorator works correctly when the API is extended"""
+    @hug.extend_api()
+    def extend_with():
+        import tests.module_fake
+        return (tests.module_fake, )
+
+    assert hug.test.get(api, '/does_not_exist/yet').data is True
 
 def test_versioning():
     """Ensure that Hug correctly routes API functions based on version"""
@@ -345,6 +357,19 @@ def test_versioning():
     def echo(text, api_version):
         return api_version
 
+    @hug.get('/echo', versions='8')  # noqa
+    def echo(text, api_version):
+        return api_version
+
+    @hug.get('/echo', versions=False)  # noqa
+    def echo(text):
+        return "No Versions"
+
+    with pytest.raises(ValueError):
+        @hug.get('/echo', versions='eight')  # noqa
+        def echo(text, api_version):
+            return api_version
+
     assert hug.test.get(api, 'v1/echo', text="hi").data == 'hi'
     assert hug.test.get(api, 'v2/echo', text="hi").data == "Echo: hi"
     assert hug.test.get(api, 'v3/echo', text="hi").data == "Echo: hi"
@@ -352,7 +377,8 @@ def test_versioning():
     assert hug.test.get(api, 'echo', text="hi", headers={'X-API-VERSION': '3'}).data == "Echo: hi"
     assert hug.test.get(api, 'v4/echo', text="hi").data == "Not Implemented"
     assert hug.test.get(api, 'v7/echo', text="hi").data == 7
-    assert hug.test.get(api, 'echo', text="hi").data == "Not Implemented"
+    assert hug.test.get(api, 'v8/echo', text="hi").data == 8
+    assert hug.test.get(api, 'echo', text="hi").data == "No Versions"
     assert hug.test.get(api, 'echo', text="hi", api_version=3, body={'api_vertion': 4}).data == "Echo: hi"
 
     with pytest.raises(ValueError):
@@ -487,6 +513,19 @@ def test_return_modifer():
     assert response.data == ['world', True, True]
 
 
+def test_custom_deserializer_support():
+    """Ensure that custom desirializers work as expected"""
+    class CustomDeserializer(object):
+        def from_string(self, string):
+            return 'custom {}'.format(string)
+
+    @hug.get()
+    def test_custom_deserializer(text: CustomDeserializer()):
+        return text
+
+    assert hug.test.get(api, 'test_custom_deserializer', text='world').data == 'custom world'
+
+
 def test_marshmallow_support():
     """Ensure that you can use Marshmallow style objects to control input and output validation and transformation"""
     class MarshmallowStyleObject(object):
@@ -503,7 +542,7 @@ def test_marshmallow_support():
 
     @hug.get()
     def test_marshmallow_style() -> schema:
-        return "world"
+        return 'world'
 
     assert hug.test.get(api, 'test_marshmallow_style').data == "Dump Success"
     assert test_marshmallow_style() == 'world'
@@ -626,6 +665,16 @@ def test_input_format():
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='Currently failing on Windows build')
+def test_specific_input_format():
+    """Test to ensure the input formatter can be specified"""
+    @hug.get(inputs={'application/json': lambda a: 'formatted'})
+    def hello(body):
+        return body
+
+    assert hug.test.get(api, 'hello', body={'should': 'work'}).data == 'formatted'
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='Currently failing on Windows build')
 def test_content_type_with_parameter():
     """Test a Content-Type with parameter as `application/json charset=UTF-8`
     as described in https://www.w3.org/Protocols/rfc2616/rfc2616-sec3.html#sec3.7"""
@@ -648,13 +697,24 @@ def test_middleware():
     def proccess_data2(request, response, resource):
         response.set_header('Bacon', 'Yumm')
 
+    @hug.reqresp_middleware()
+    def process_data3(request):
+        request.env['MEET'] = 'Ham'
+        response, resource = yield request
+        response.set_header('Ham', 'Buu!!')
+        yield response
+
     @hug.get()
     def hello(request):
-        return request.env['SERVER_NAME']
+        return [
+            request.env['SERVER_NAME'],
+            request.env['MEET']
+        ]
 
     result = hug.test.get(api, 'hello')
-    assert result.data == 'Bacon'
+    assert result.data == ['Bacon', 'Ham']
     assert result.headers_dict['Bacon'] == 'Yumm'
+    assert result.headers_dict['Ham'] == 'Buu!!'
 
 
 def test_requires():
@@ -679,7 +739,13 @@ def test_extending_api():
         import tests.module_fake
         return (tests.module_fake, )
 
+    @hug.get('/fake/error')
+    def my_error():
+        import tests.module_fake
+        raise tests.module_fake.FakeException()
+
     assert hug.test.get(api, 'fake/made_up_api').data
+    assert hug.test.get(api, 'fake/error').data == True
 
 
 def test_extending_api_simple():
@@ -707,6 +773,31 @@ def test_extending_api_with_exception_handler():
         return (tests.module_fake_simple, )
 
     assert hug.test.get(api, '/fake_simple/exception').data == 'it works!'
+
+
+def test_extending_api_with_base_url():
+    """Test to ensure it's possible to extend the current API with a specified base URL"""
+    @hug.extend_api('/fake', base_url='/api')
+    def extend_with():
+        import tests.module_fake
+        return (tests.module_fake, )
+
+    assert hug.test.get(api, '/api/v1/fake/made_up_api').data
+
+
+def test_extending_api_with_same_path_under_different_base_url():
+    """Test to ensure it's possible to extend the current API with the same path under a different base URL"""
+    @hug.get()
+    def made_up_hello():
+        return 'hi'
+
+    @hug.extend_api(base_url='/api')
+    def extend_with():
+        import tests.module_fake_simple
+        return (tests.module_fake_simple, )
+
+    assert hug.test.get(api, '/made_up_hello').data == 'hi'
+    assert hug.test.get(api, '/api/made_up_hello').data == 'hello'
 
 
 def test_cli():
@@ -962,6 +1053,14 @@ def test_static_file_support():
     assert '404' in hug.test.get(api, '/static/NOT_IN_EXISTANCE.md').status
 
 
+def test_static_jailed():
+    """Test to ensure we can't serve from outside static dir"""
+    @hug.static('/static')
+    def my_static_dirs():
+        return ['tests']
+    assert '404' in hug.test.get(api, '/static/../README.md').status
+
+
 @pytest.mark.skipif(sys.platform == 'win32', reason='Currently failing on Windows build')
 def test_sink_support():
     """Test to ensure sink URL routers work as expected"""
@@ -971,6 +1070,15 @@ def test_sink_support():
 
     assert hug.test.get(api, '/all/the/things').data == '/the/things'
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='Currently failing on Windows build')
+def test_sink_support_with_base_url():
+    """Test to ensure sink URL routers work when the API is extended with a specified base URL"""
+    @hug.extend_api('/fake', base_url='/api')
+    def extend_with():
+        import tests.module_fake
+        return (tests.module_fake, )
+
+    assert hug.test.get(api, '/api/fake/all/the/things').data == '/the/things'
 
 def test_cli_with_string_annotation():
     """Test to ensure CLI's work correctly with string annotations"""
@@ -981,8 +1089,8 @@ def test_cli_with_string_annotation():
     assert hug.test.cli(test, True)
 
 
-def test_cli_with_kargs():
-    """Test to ensure CLI's work correctly when taking kargs"""
+def test_cli_with_args():
+    """Test to ensure CLI's work correctly when taking args"""
     @hug.cli()
     def test(*values):
         return values
@@ -1032,9 +1140,9 @@ def test_wraps():
     """Test to ensure you can safely apply decorators to hug endpoints by using @hug.wraps"""
     def my_decorator(function):
         @hug.wraps(function)
-        def decorated(*kargs, **kwargs):
+        def decorated(*args, **kwargs):
             kwargs['name'] = 'Timothy'
-            return function(*kargs, **kwargs)
+            return function(*args, **kwargs)
         return decorated
 
     @hug.get()
@@ -1048,9 +1156,9 @@ def test_wraps():
 
     def my_second_decorator(function):
         @hug.wraps(function)
-        def decorated(*kargs, **kwargs):
+        def decorated(*args, **kwargs):
             kwargs['name'] = "Not telling"
-            return function(*kargs, **kwargs)
+            return function(*args, **kwargs)
         return decorated
 
     @hug.get()
@@ -1063,6 +1171,19 @@ def test_wraps():
     assert result['name'] == "Not telling"
     assert result['took']
 
+    def my_decorator_with_request(function):
+        @hug.wraps(function)
+        def decorated(request, *args, **kwargs):
+            kwargs['has_request'] = bool(request)
+            return function(*args, **kwargs)
+        return decorated
+
+    @hug.get()
+    @my_decorator_with_request
+    def do_you_have_request(has_request=False):
+        return has_request
+
+    assert hug.test.get(api, 'do_you_have_request').data
 
 
 def test_cli_with_empty_return():
@@ -1074,13 +1195,48 @@ def test_cli_with_empty_return():
     assert not hug.test.cli(test_empty_return)
 
 
+def test_cli_with_multiple_ints():
+    """Test to ensure multiple ints work with CLI"""
+    @hug.cli()
+    def test_multiple_cli(ints: hug.types.comma_separated_list):
+        return ints
+
+    assert hug.test.cli(test_multiple_cli, ints='1,2,3') == ['1', '2', '3']
+
+
+    class ListOfInts(hug.types.Multiple):
+        """Only accept a list of numbers."""
+
+        def __call__(self, value):
+            value = super().__call__(value)
+            return [int(number) for number in value]
+
+    @hug.cli()
+    def test_multiple_cli(ints: ListOfInts()=[]):
+        return ints
+
+    assert hug.test.cli(test_multiple_cli, ints=['1', '2', '3']) == [1, 2, 3]
+
+    @hug.cli()
+    def test_multiple_cli(ints: hug.types.Multiple[int]()=[]):
+        return ints
+
+    assert hug.test.cli(test_multiple_cli, ints=['1', '2', '3']) == [1, 2, 3]
+
+
 def test_startup():
     """Test to ensure hug startup decorators work as expected"""
     @hug.startup()
     def happens_on_startup(api):
         pass
 
-    assert happens_on_startup in api.http.startup_handlers
+    @hug.startup()
+    @coroutine
+    def async_happens_on_startup(api):
+        pass
+
+    assert happens_on_startup in api.startup_handlers
+    assert async_happens_on_startup in api.startup_handlers
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='Currently failing on Windows build')
@@ -1095,28 +1251,28 @@ def test_adding_headers():
     assert result.headers_dict['name'] == 'Timothy'
 
 
-def test_on_demand_404():
+def test_on_demand_404(hug_api):
     """Test to ensure it's possible to route to a 404 response on demand"""
-    @hug.get()
+    @hug_api.route.http.get()
     def my_endpoint(hug_api):
         return hug_api.http.not_found
 
-    assert '404' in hug.test.get(api, 'my_endpoint').status
+    assert '404' in hug.test.get(hug_api, 'my_endpoint').status
 
 
-    @hug.get()
+    @hug_api.route.http.get()
     def my_endpoint2(hug_api):
         raise hug.HTTPNotFound()
 
-    assert '404' in hug.test.get(api, 'my_endpoint2').status
+    assert '404' in hug.test.get(hug_api, 'my_endpoint2').status
 
-    @hug.get()
+    @hug_api.route.http.get()
     def my_endpoint3(hug_api):
         """Test to ensure base 404 handler works as expected"""
         del hug_api.http._not_found
         return hug_api.http.not_found
 
-    assert '404' in hug.test.get(api, 'my_endpoint3').status
+    assert '404' in hug.test.get(hug_api, 'my_endpoint3').status
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='Currently failing on Windows build')
@@ -1207,3 +1363,157 @@ def test_multipart():
         output = json.loads(hug.defaults.output_format({'logo': logo.read()}).decode('utf8'))
         assert hug.test.post(api, 'test_multipart_post',  body=prepared_request.body,
                              headers=prepared_request.headers).data == output
+
+
+def test_json_null(hug_api):
+    """Test to ensure passing in null within JSON will be seen as None and not allowed by text values"""
+    @hug_api.route.http.post()
+    def test_naive(argument_1):
+        return argument_1
+
+    assert hug.test.post(hug_api, 'test_naive', body='{"argument_1": null}',
+                         headers={'content-type': 'application/json'}).data == None
+
+
+    @hug_api.route.http.post()
+    def test_text_type(argument_1: hug.types.text):
+        return argument_1
+
+
+    assert 'errors' in hug.test.post(hug_api, 'test_text_type', body='{"argument_1": null}',
+                                    headers={'content-type': 'application/json'}).data
+
+
+def test_json_self_key(hug_api):
+    """Test to ensure passing in a json with a key named 'self' works as expected"""
+    @hug_api.route.http.post()
+    def test_self_post(body):
+        return body
+
+    assert hug.test.post(hug_api, 'test_self_post', body='{"self": "this"}',
+                         headers={'content-type': 'application/json'}).data == {"self": "this"}
+
+
+def test_204_with_no_body(hug_api):
+    """Test to ensure returning no body on a 204 statused endpoint works without issue"""
+    @hug_api.route.http.delete()
+    def test_route(response):
+        response.status = hug.HTTP_204
+        return
+
+    assert '204' in hug.test.delete(hug_api, 'test_route').status
+
+
+def test_output_format_inclusion(hug_api):
+    """Test to ensure output format can live in one api but apply to the other"""
+    @hug.get()
+    def my_endpoint():
+        return 'hello'
+
+    @hug.default_output_format(api=hug_api)
+    def mutated_json(data):
+        return hug.output_format.json({'mutated': data})
+
+    hug_api.extend(api, '')
+
+    assert hug.test.get(hug_api, 'my_endpoint').data == {'mutated': 'hello'}
+
+
+def test_api_pass_along(hug_api):
+    """Test to ensure the correct API instance is passed along using API directive"""
+    @hug.get()
+    def takes_api(hug_api):
+        return hug_api.__name__
+
+    hug_api.__name__ = "Test API"
+    hug_api.extend(api, '')
+    assert hug.test.get(hug_api, 'takes_api').data == hug_api.__name__
+
+
+def test_exception_excludes(hug_api):
+    """Test to ensure it's possible to add excludes to exception routers"""
+    class MyValueError(ValueError):
+        pass
+
+    class MySecondValueError(ValueError):
+        pass
+
+    @hug.exception(Exception, exclude=MySecondValueError, api=hug_api)
+    def base_exception_handler(exception):
+        return 'base exception handler'
+
+    @hug.exception(ValueError, exclude=(MyValueError, MySecondValueError), api=hug_api)
+    def base_exception_handler(exception):
+        return 'special exception handler'
+
+    @hug.get(api=hug_api)
+    def my_handler():
+        raise MyValueError()
+
+    @hug.get(api=hug_api)
+    def fall_through_handler():
+        raise ValueError('reason')
+
+    @hug.get(api=hug_api)
+    def full_through_to_raise():
+        raise MySecondValueError()
+
+    assert hug.test.get(hug_api, 'my_handler').data == 'base exception handler'
+    assert hug.test.get(hug_api, 'fall_through_handler').data == 'special exception handler'
+    with pytest.raises(MySecondValueError):
+        assert hug.test.get(hug_api, 'full_through_to_raise').data
+
+
+def test_cli_kwargs(hug_api):
+    """Test to ensure cli commands can correctly handle **kwargs"""
+    @hug.cli(api=hug_api)
+    def takes_all_the_things(required_argument, named_argument=False, *args, **kwargs):
+        return [required_argument, named_argument, args, kwargs]
+
+    assert hug.test.cli(takes_all_the_things, 'hi!') == ['hi!', False, (), {}]
+    assert hug.test.cli(takes_all_the_things, 'hi!', named_argument='there') == ['hi!', 'there', (), {}]
+    assert hug.test.cli(takes_all_the_things, 'hi!', 'extra', '--arguments', 'can', '--happen', '--all', 'the', 'tim') \
+                             == ['hi!', False, ('extra', ), {'arguments': 'can', 'happen': True, 'all': ['the', 'tim']}]
+
+
+def test_api_gets_extra_variables_without_kargs_or_kwargs(hug_api):
+    """Test to ensure it's possiible to extra all params without specifying them exactly"""
+    @hug.get(api=hug_api)
+    def ensure_params(request, response):
+        return request.params
+
+    assert hug.test.get(hug_api, 'ensure_params', params={'make': 'it'}).data == {'make': 'it'}
+    assert hug.test.get(hug_api, 'ensure_params', hello='world').data == {'hello': 'world'}
+
+
+def test_utf8_output(hug_api):
+    """Test to ensure unicode data is correct outputed on JSON outputs without modification"""
+    @hug.get(api=hug_api)
+    def output_unicode():
+        return {'data': 'Τη γλώσσα μου έδωσαν ελληνική'}
+
+    assert hug.test.get(hug_api, 'output_unicode').data == {'data': 'Τη γλώσσα μου έδωσαν ελληνική'}
+
+
+def test_param_rerouting(hug_api):
+    @hug.local(api=hug_api, map_params={'local_id': 'record_id'})
+    @hug.cli(api=hug_api, map_params={'cli_id': 'record_id'})
+    @hug.get(api=hug_api, map_params={'id': 'record_id'})
+    def pull_record(record_id: hug.types.number):
+        return record_id
+
+    assert hug.test.get(hug_api, 'pull_record', id=10).data == 10
+    assert hug.test.get(hug_api, 'pull_record', id='10').data == 10
+    assert 'errors' in hug.test.get(hug_api, 'pull_record', id='ten').data
+    assert hug.test.cli(pull_record, cli_id=10) == 10
+    assert hug.test.cli(pull_record, cli_id='10') == 10
+    with pytest.raises(SystemExit):
+        hug.test.cli(pull_record, cli_id='ten')
+    assert pull_record(local_id=10)
+
+    @hug.get(api=hug_api, map_params={'id': 'record_id'})
+    def pull_record(record_id: hug.types.number=1):
+        return record_id
+
+    assert hug.test.get(hug_api, 'pull_record').data == 1
+    assert hug.test.get(hug_api, 'pull_record', id=10).data == 10
